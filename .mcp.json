@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "skillweave": {
+      "command": "/home/itodoro/skillweave-mcp/skillweave-mcp",
+      "args": [],
+      "env": {
+        "PATH": "/home/itodoro/install_test/go1.25/bin:/home/itodoro/zopen/usr/local/bin:/home/itodoro/zopen/usr/local/altbin:/bin:/usr/bin",
+        "HOME": "/home/itodoro"
+      }
+    }
+  }
+}

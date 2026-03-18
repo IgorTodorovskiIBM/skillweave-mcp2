@@ -1,0 +1,4 @@
+skillweave
+*.log
+.DS_Store
+.gemini/

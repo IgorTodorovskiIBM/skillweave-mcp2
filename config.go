@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -151,6 +152,54 @@ func parseFrontmatter(raw string) (string, string, string) {
 		}
 	}
 	return name, desc, body
+}
+
+// DetectLocalPath checks if the current directory (or a parent) is a git
+// checkout whose remote matches repoURL. Returns the repo root or "".
+func DetectLocalPath(repoURL string) string {
+	// Normalize the repo URL for comparison — strip .git suffix and protocol.
+	norm := normalizeRepoURL(repoURL)
+
+	// Walk up from cwd looking for a .git directory.
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			// Found a git repo — check its remotes.
+			out, err := exec.Command("git", "-C", dir, "remote", "-v").Output()
+			if err == nil {
+				for _, line := range strings.Split(string(out), "\n") {
+					if strings.Contains(normalizeRepoURL(line), norm) {
+						return dir
+					}
+				}
+			}
+			// Found a git repo but remotes don't match — stop looking.
+			return ""
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
+}
+
+// normalizeRepoURL strips protocol, .git suffix, and common prefixes for comparison.
+func normalizeRepoURL(u string) string {
+	u = strings.ToLower(u)
+	// Strip protocol
+	for _, prefix := range []string{"https://", "http://", "git@", "ssh://"} {
+		u = strings.TrimPrefix(u, prefix)
+	}
+	// git@github.com:user/repo → github.com/user/repo
+	u = strings.Replace(u, ":", "/", 1)
+	u = strings.TrimSuffix(u, ".git")
+	return u
 }
 
 // FormatSkillList returns a human-readable list of registered skills.

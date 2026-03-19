@@ -155,6 +155,10 @@ func cmdRegister(args []string) {
 		}
 	}
 
+	if *localPath == "" {
+		*localPath = DetectLocalPath(rURL)
+	}
+
 	skillName := *name
 	if skillName == "" {
 		skillName = DeriveSkillName(sPath)

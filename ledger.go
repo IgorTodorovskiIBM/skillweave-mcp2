@@ -23,7 +23,7 @@ type LedgerEntry struct {
 
 // WriteLedger writes a ledger entry to the date-partitioned directory.
 func WriteLedger(cacheDir string, entry LedgerEntry) error {
-	repoHash := hashString(entry.RepoURL)
+	repoHash := hashString(normalizeRepoURL(entry.RepoURL))
 	skillHash := hashString(entry.SkillPath)
 	now := entry.Timestamp
 
@@ -47,7 +47,7 @@ func WriteLedger(cacheDir string, entry LedgerEntry) error {
 
 // ReadLedger reads the most recent ledger entries for a skill.
 func ReadLedger(cacheDir, repoURL, skillPath string, limit int) ([]LedgerEntry, error) {
-	repoHash := hashString(repoURL)
+	repoHash := hashString(normalizeRepoURL(repoURL))
 	var baseDir string
 	if skillPath != "" {
 		skillHash := hashString(skillPath)
@@ -87,4 +87,86 @@ func ReadLedger(cacheDir, repoURL, skillPath string, limit int) ([]LedgerEntry, 
 		entries = entries[:limit]
 	}
 	return entries, nil
+}
+
+// DeleteLedgerEntry removes a single ledger entry by ID.
+func DeleteLedgerEntry(cacheDir, repoURL, skillPath, entryID string) error {
+	repoHash := hashString(normalizeRepoURL(repoURL))
+	skillHash := hashString(skillPath)
+	baseDir := filepath.Join(cacheDir, "ledger", repoHash, skillHash)
+
+	var found bool
+	err := filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		var e LedgerEntry
+		if err := json.Unmarshal(data, &e); err != nil {
+			return nil
+		}
+		if e.ID == entryID {
+			found = true
+			return os.Remove(path)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("ledger entry %q not found", entryID)
+	}
+	return nil
+}
+
+// ClearLedger removes all ledger entries for a skill.
+func ClearLedger(cacheDir, repoURL, skillPath string) (int, error) {
+	repoHash := hashString(normalizeRepoURL(repoURL))
+	skillHash := hashString(skillPath)
+	baseDir := filepath.Join(cacheDir, "ledger", repoHash, skillHash)
+
+	var count int
+	err := filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		count++
+		return os.Remove(path)
+	})
+	return count, err
+}
+
+// MarkLedgerMerged stamps all learnings-only entries (no CommitSHA) with the
+// given commit SHA so they are not picked up as "unmerged" again.
+func MarkLedgerMerged(cacheDir, repoURL, skillPath, commitSHA string) error {
+	repoHash := hashString(normalizeRepoURL(repoURL))
+	skillHash := hashString(skillPath)
+	baseDir := filepath.Join(cacheDir, "ledger", repoHash, skillHash)
+
+	return filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		var e LedgerEntry
+		if err := json.Unmarshal(data, &e); err != nil {
+			return nil
+		}
+		if e.CommitSHA != "" || len(e.Learnings) == 0 {
+			return nil
+		}
+		e.CommitSHA = commitSHA
+		updated, err := json.MarshalIndent(e, "", "  ")
+		if err != nil {
+			return nil
+		}
+		return os.WriteFile(path, updated, 0o644)
+	})
 }

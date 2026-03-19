@@ -57,6 +57,24 @@ skillweave unregister zos-porting-cli
 skillweave list
 ```
 
+### `push`
+
+```bash
+# Push with auto-generated commit message (merges unmerged learnings via bob)
+skillweave push zos-porting-cli
+
+# With a custom commit message
+skillweave push -m "Add patch conflict tips" zos-porting-cli
+
+# Push branch only, no PR
+skillweave push --no-pr zos-porting-cli
+
+# Use a specific bob binary path
+skillweave push --bob /home/itodoro/bin/bob zos-porting-cli
+```
+
+If there are unmerged learnings in the ledger (from `skill_update` calls that haven't been pushed yet), `push` uses [bob](https://github.com/anthropics/bob) to intelligently merge them into the SKILL.md before committing. If the SKILL.md is already up to date, it pushes as-is.
+
 Config is stored in `~/.skillweave/skills.json`.
 
 ## MCP Tools

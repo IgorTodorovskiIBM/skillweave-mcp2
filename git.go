@@ -15,8 +15,9 @@ func hashString(s string) string {
 }
 
 // repoCacheDir returns the local cache path for a repo URL.
+// Normalizes the URL so HTTPS and SSH variants share the same cache.
 func repoCacheDir(cacheDir, repoURL string) string {
-	return filepath.Join(cacheDir, "repos", hashString(repoURL))
+	return filepath.Join(cacheDir, "repos", hashString(normalizeRepoURL(repoURL)))
 }
 
 // ensureRepo clones or pulls a repository, returning the local path.
@@ -35,6 +36,9 @@ func ensureRepo(repoURL, cacheDir string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+
+		// Clean up any uncommitted changes and stale branches.
+		exec.Command("git", "-C", localPath, "checkout", "--", ".").Run()
 		cmd = exec.Command("git", "-C", localPath, "checkout", branch)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("git checkout: %s: %w", out, err)
@@ -43,6 +47,18 @@ func ensureRepo(repoURL, cacheDir string) (string, error) {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("git reset: %s: %w", out, err)
 		}
+
+		// Delete local skill-update branches left over from failed pushes.
+		listCmd := exec.Command("git", "-C", localPath, "branch", "--list", "skill-update/*")
+		if branchOut, err := listCmd.Output(); err == nil {
+			for _, b := range strings.Split(strings.TrimSpace(string(branchOut)), "\n") {
+				b = strings.TrimSpace(b)
+				if b != "" {
+					exec.Command("git", "-C", localPath, "branch", "-D", b).Run()
+				}
+			}
+		}
+
 		return localPath, nil
 	}
 

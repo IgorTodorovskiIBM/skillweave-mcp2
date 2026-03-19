@@ -14,15 +14,17 @@ import (
 // --- Parameter structs ---
 
 type SkillUpdateParams struct {
-	SessionID      string   `json:"session_id" jsonschema:"session ID returned when the skill was loaded"`
+	SessionID      string   `json:"session_id,omitempty" jsonschema:"session ID returned when the skill was loaded (optional if skill_name is provided)"`
+	SkillName      string   `json:"skill_name,omitempty" jsonschema:"skill name as fallback when session_id is unavailable"`
 	Learnings      []string `json:"learnings" jsonschema:"list of things learned this session (corrections, tips, patterns, warnings)"`
 	UpdatedContent string   `json:"updated_content" jsonschema:"full new SKILL.md content with learnings incorporated"`
 }
 
 type SkillPushParams struct {
-	SessionID     string `json:"session_id" jsonschema:"session ID returned when the skill was loaded"`
+	SessionID     string `json:"session_id,omitempty" jsonschema:"session ID returned when the skill was loaded (optional if skill_name is provided)"`
+	SkillName     string `json:"skill_name,omitempty" jsonschema:"skill name as fallback when session_id is unavailable"`
 	CommitMessage string `json:"commit_message" jsonschema:"commit message for the update"`
-	CreatePR      *bool  `json:"create_pr,omitempty" jsonschema:"create a PR (default true), set false to push branch only"`
+	SkipPR        bool   `json:"skip_pr,omitempty" jsonschema:"set true to push branch only without creating a PR (default false)"`
 }
 
 // registerTools registers all MCP tools on the server.
@@ -62,7 +64,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 
 		mcp.AddTool(srv, &mcp.Tool{
 			Name:        toolName,
-			Description: desc + " Read this skill before starting related work.",
+			Description: desc,
 		}, func(ctx context.Context, req *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, map[string]any, error) {
 			// Fetch latest on each call.
 			localPath, err := ensureRepo(s.RepoURL, cacheDir)
@@ -98,12 +100,39 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		})
 	}
 
+	// resolveSession tries session_id first, then falls back to skill_name
+	// by looking up the registered skill and creating an ad-hoc session.
+	resolveSession := func(sessionID, skillName string) (*Session, error) {
+		if sessionID != "" {
+			if s, err := sessions.Get(sessionID); err == nil {
+				return s, nil
+			}
+		}
+		if skillName != "" {
+			skill, err := cfg.FindSkill(skillName)
+			if err != nil {
+				return nil, err
+			}
+			localRepoPath := repoCacheDir(cacheDir, skill.RepoURL)
+			var localFilePath string
+			if skill.LocalPath != "" {
+				lp := filepath.Join(skill.LocalPath, skill.SkillPath)
+				if _, err := os.Stat(lp); err == nil {
+					localFilePath = lp
+				}
+			}
+			content, _ := os.ReadFile(filepath.Join(localRepoPath, skill.SkillPath))
+			return sessions.Create(skill.Name, skill.RepoURL, skill.SkillPath, localRepoPath, localFilePath, string(content)), nil
+		}
+		return nil, fmt.Errorf("provide session_id or skill_name")
+	}
+
 	// --- skill_update ---
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "skill_update",
 		Description: "Save an updated SKILL.md locally. Call this when the user has corrected you multiple times, you discovered a new pattern or fix, the user asks you to update the skill, or the session is ending with meaningful learnings. Pass your learnings as a list and the full updated SKILL.md content.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillUpdateParams) (*mcp.CallToolResult, map[string]any, error) {
-		session, err := sessions.Get(in.SessionID)
+		session, err := resolveSession(in.SessionID, in.SkillName)
 		if err != nil {
 			return textResult("Error: " + err.Error()), map[string]any{}, nil
 		}
@@ -158,7 +187,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		Name:        "skill_push",
 		Description: "Push the updated SKILL.md to GitHub as a PR. Call skill_update first to save locally, then call this when the user wants to share the changes with the team.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillPushParams) (*mcp.CallToolResult, map[string]any, error) {
-		session, err := sessions.Get(in.SessionID)
+		session, err := resolveSession(in.SessionID, in.SkillName)
 		if err != nil {
 			return textResult("Error: " + err.Error()), map[string]any{}, nil
 		}
@@ -167,10 +196,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 			return textResult("Error: call skill_update first to save changes locally before pushing."), map[string]any{}, nil
 		}
 
-		createPRFlag := true
-		if in.CreatePR != nil {
-			createPRFlag = *in.CreatePR
-		}
+		createPRFlag := !in.SkipPR
 
 		// Read the locally saved content.
 		cachePath := filepath.Join(session.LocalRepoPath, session.SkillPath)

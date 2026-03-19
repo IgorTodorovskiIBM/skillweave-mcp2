@@ -97,7 +97,7 @@ func ParseGitHubURL(rawURL string) (repoURL, skillPath string, err error) {
 	if m == nil {
 		return "", "", fmt.Errorf("not a GitHub blob URL: %s\nExpected: https://github.com/<owner>/<repo>/blob/<branch>/<path-to-SKILL.md>", rawURL)
 	}
-	repoURL = "https://github.com/" + m[1] + ".git"
+	repoURL = "git@github.com:" + m[1] + ".git"
 	skillPath = m[2]
 	return repoURL, skillPath, nil
 }

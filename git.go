@@ -62,7 +62,35 @@ func ensureRepo(repoURL, cacheDir string) (string, error) {
 		return localPath, nil
 	}
 
-	// Clone fresh.
+	return cloneRepo(repoURL, localPath)
+}
+
+// checkForUpdates does a lightweight fetch and checks if the skill file
+// has changed on the remote. Returns true if the remote version differs.
+func checkForUpdates(localPath, skillPath string) (bool, error) {
+	// Fetch without merging.
+	cmd := exec.Command("git", "-C", localPath, "fetch", "origin")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("git fetch: %s: %w", out, err)
+	}
+
+	branch, err := defaultBranch(localPath)
+	if err != nil {
+		return false, err
+	}
+
+	// Compare the skill file between HEAD and origin.
+	cmd = exec.Command("git", "-C", localPath, "diff", "--quiet", "HEAD", "origin/"+branch, "--", skillPath)
+	err = cmd.Run()
+	if err != nil {
+		// Exit code 1 means there are differences.
+		return true, nil
+	}
+	return false, nil
+}
+
+// cloneRepo clones a fresh copy of the repo.
+func cloneRepo(repoURL, localPath string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return "", fmt.Errorf("mkdir: %w", err)
 	}

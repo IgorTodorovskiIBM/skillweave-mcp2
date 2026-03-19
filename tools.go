@@ -34,29 +34,31 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 	for _, s := range cfg.Skills {
 		s := s // capture for closure
 
-		// Try to read the SKILL.md from cache to get frontmatter.
-		// Read frontmatter from cache for the tool description.
-		// If cache doesn't exist yet, clone once (first run only).
+		// Ensure we have a cached clone, then check for updates.
 		desc := "Skill guide: " + s.Name
 		localRepoPath := repoCacheDir(cacheDir, s.RepoURL)
 		skillFile := filepath.Join(localRepoPath, s.SkillPath)
+
+		if _, err := os.Stat(filepath.Join(localRepoPath, ".git")); err != nil {
+			// No cache — clone once.
+			if clonedPath, err := ensureRepo(s.RepoURL, cacheDir); err == nil {
+				localRepoPath = clonedPath
+				skillFile = filepath.Join(localRepoPath, s.SkillPath)
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: could not clone %s for skill %q: %v\n", s.RepoURL, s.Name, err)
+			}
+		} else {
+			// Cache exists — quick check if remote has updates.
+			if updated, err := checkForUpdates(localRepoPath, s.SkillPath); err == nil && updated {
+				fmt.Fprintf(os.Stderr, "skill %q: remote has updates, pulling latest\n", s.Name)
+				ensureRepo(s.RepoURL, cacheDir)
+			}
+		}
+
 		if raw, err := os.ReadFile(skillFile); err == nil {
-			// Cache exists — use it as-is, don't fetch.
 			_, frontDesc, _ := parseFrontmatter(string(raw))
 			if frontDesc != "" {
 				desc = frontDesc
-			}
-		} else {
-			// No cache — clone once for the description.
-			if clonedPath, err := ensureRepo(s.RepoURL, cacheDir); err == nil {
-				if raw, err := os.ReadFile(filepath.Join(clonedPath, s.SkillPath)); err == nil {
-					_, frontDesc, _ := parseFrontmatter(string(raw))
-					if frontDesc != "" {
-						desc = frontDesc
-					}
-				}
-			} else {
-				fmt.Fprintf(os.Stderr, "warning: could not fetch %s for skill %q: %v\n", s.RepoURL, s.Name, err)
 			}
 		}
 

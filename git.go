@@ -120,26 +120,6 @@ func defaultBranch(localPath string) (string, error) {
 	return parts[len(parts)-1], nil
 }
 
-// findSkills walks a repo directory and returns all SKILL.md file paths (relative to repo root).
-func findSkills(localPath string) ([]string, error) {
-	var skills []string
-	err := filepath.WalkDir(localPath, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		// Skip .git directory.
-		if d.IsDir() && d.Name() == ".git" {
-			return filepath.SkipDir
-		}
-		if !d.IsDir() && d.Name() == "SKILL.md" {
-			rel, _ := filepath.Rel(localPath, path)
-			skills = append(skills, rel)
-		}
-		return nil
-	})
-	return skills, err
-}
-
 // createBranchAndCommit creates a new branch from the default branch, writes the skill content, and commits.
 func createBranchAndCommit(localPath, skillPath, content, message, branch string) (string, error) {
 	defBranch, err := defaultBranch(localPath)

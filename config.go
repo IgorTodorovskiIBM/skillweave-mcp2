@@ -18,9 +18,49 @@ type RegisteredSkill struct {
 	LocalPath string `json:"local_path,omitempty"` // Local checkout root (e.g. /Users/igor/Projects/zos-porting)
 }
 
-// SkillConfig holds all registered skills.
+// AICommand is a configured AI tool for merging learnings.
+type AICommand struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"` // Static args; prompt is appended as the last arg.
+}
+
+// SkillConfig holds all registered skills and settings.
 type SkillConfig struct {
-	Skills []RegisteredSkill `json:"skills"`
+	Skills     []RegisteredSkill `json:"skills"`
+	AICommands []AICommand       `json:"ai_commands,omitempty"`
+}
+
+// FindAICommand looks up an AI command by name.
+func (c *SkillConfig) FindAICommand(name string) (*AICommand, error) {
+	for i := range c.AICommands {
+		if c.AICommands[i].Name == name {
+			return &c.AICommands[i], nil
+		}
+	}
+	return nil, fmt.Errorf("AI command not configured: %q (use 'skillweave ai add' to add one)", name)
+}
+
+// AddAICommand adds or replaces an AI command by name.
+func (c *SkillConfig) AddAICommand(cmd AICommand) {
+	for i := range c.AICommands {
+		if c.AICommands[i].Name == cmd.Name {
+			c.AICommands[i] = cmd
+			return
+		}
+	}
+	c.AICommands = append(c.AICommands, cmd)
+}
+
+// RemoveAICommand removes an AI command by name. Returns true if found.
+func (c *SkillConfig) RemoveAICommand(name string) bool {
+	for i := range c.AICommands {
+		if c.AICommands[i].Name == name {
+			c.AICommands = append(c.AICommands[:i], c.AICommands[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 func configPath(cacheDir string) string {

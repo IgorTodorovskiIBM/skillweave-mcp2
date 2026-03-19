@@ -227,7 +227,10 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 			}
 		}
 
-		// Update ledger with push info.
+		// Mark old learnings as merged, then record the push.
+		if err := MarkLedgerMerged(cacheDir, session.RepoURL, session.SkillPath, commitSHA); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to mark ledger entries as merged: %v\n", err)
+		}
 		entry := LedgerEntry{
 			ID:        generateID(),
 			SessionID: session.ID,

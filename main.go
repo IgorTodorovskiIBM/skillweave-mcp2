@@ -59,6 +59,12 @@ func main() {
 		case "ledger":
 			cmdLedger(os.Args[2:])
 			return
+		case "ai":
+			cmdAI(os.Args[2:])
+			return
+		case "help", "--help", "-h":
+			printHelp()
+			return
 		}
 	}
 
@@ -337,16 +343,182 @@ func cmdLedger(args []string) {
 	}
 }
 
+func printHelp() {
+	fmt.Fprintf(os.Stderr, `skillweave - MCP server that keeps SKILL.md files up to date
+
+Usage: skillweave <command> [args]
+
+Commands:
+  register    Register a SKILL.md for tracking
+  unregister  Remove a registered skill
+  list        List registered skills
+  push        Push skill updates to GitHub as a PR
+  ledger      Manage ledger entries (list, delete, clear)
+  ai          Configure AI tools for merging (add, list, remove)
+  help        Show this help
+
+Server mode (no command):
+  skillweave [flags]       Start the MCP server
+
+Server flags:
+  -http <addr>             HTTP listen address (default: stdio mode)
+  -log-transport           Log MCP transport frames to stderr
+  -cache-dir <path>        Cache directory (default: ~/.skillweave)
+
+Run 'skillweave <command> --help' for details on each command.
+`)
+}
+
+func cmdAI(args []string) {
+	fs := flag.NewFlagSet("ai", flag.ExitOnError)
+	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: skillweave ai <action> [args]\n\n")
+		fmt.Fprintf(os.Stderr, "Actions:\n")
+		fmt.Fprintf(os.Stderr, "  add     <name> <command> [args...]  Add an AI tool\n")
+		fmt.Fprintf(os.Stderr, "  list                                List configured AI tools\n")
+		fmt.Fprintf(os.Stderr, "  remove  <name>                      Remove an AI tool\n")
+		fmt.Fprintf(os.Stderr, "  reorder <name1> <name2> ...         Set the order (first = tried first)\n\n")
+		fmt.Fprintf(os.Stderr, "Examples:\n")
+		fmt.Fprintf(os.Stderr, "  skillweave ai add bob bob --yolo --output-format text\n")
+		fmt.Fprintf(os.Stderr, "  skillweave ai add gemini /home/itodoro/bin/gemini.mjs -p\n")
+		fmt.Fprintf(os.Stderr, "  skillweave ai reorder gemini bob\n")
+		fmt.Fprintf(os.Stderr, "  skillweave ai list\n")
+		fmt.Fprintf(os.Stderr, "  skillweave ai remove gemini\n\n")
+		fmt.Fprintf(os.Stderr, "The prompt is always appended as the last argument.\n")
+		fmt.Fprintf(os.Stderr, "When pushing, tools are tried in order until one succeeds.\n\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	if *cacheDir == "" {
+		*cacheDir = defaultCacheDir()
+	}
+
+	action := fs.Arg(0)
+
+	cfg, err := LoadConfig(*cacheDir)
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+
+	switch action {
+	case "add":
+		if fs.NArg() < 3 {
+			fmt.Fprintf(os.Stderr, "Usage: skillweave ai add <name> <command> [args...]\n")
+			os.Exit(1)
+		}
+		name := fs.Arg(1)
+		command := fs.Arg(2)
+		var cmdArgs []string
+		for i := 3; i < fs.NArg(); i++ {
+			cmdArgs = append(cmdArgs, fs.Arg(i))
+		}
+		cfg.AddAICommand(AICommand{
+			Name:    name,
+			Command: command,
+			Args:    cmdArgs,
+		})
+		if err := SaveConfig(*cacheDir, cfg); err != nil {
+			log.Fatalf("save config: %v", err)
+		}
+		fmt.Printf("Added AI tool %q: %s %s\n", name, command, strings.Join(cmdArgs, " "))
+
+	case "list":
+		if len(cfg.AICommands) == 0 {
+			fmt.Println("No AI tools configured. Use 'skillweave ai add' to add one.")
+			fmt.Println("\nExample:")
+			fmt.Println("  skillweave ai add bob bob --yolo --output-format text")
+			return
+		}
+		for i, cmd := range cfg.AICommands {
+			order := fmt.Sprintf("%d.", i+1)
+			args := ""
+			if len(cmd.Args) > 0 {
+				args = " " + strings.Join(cmd.Args, " ")
+			}
+			fmt.Printf("  %s %s  →  %s%s\n", order, cmd.Name, cmd.Command, args)
+		}
+
+	case "remove":
+		if fs.NArg() < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: skillweave ai remove <name>\n")
+			os.Exit(1)
+		}
+		name := fs.Arg(1)
+		if !cfg.RemoveAICommand(name) {
+			fmt.Fprintf(os.Stderr, "AI tool %q not found\n", name)
+			os.Exit(1)
+		}
+		if err := SaveConfig(*cacheDir, cfg); err != nil {
+			log.Fatalf("save config: %v", err)
+		}
+		fmt.Printf("Removed AI tool %q\n", name)
+
+	case "reorder":
+		if fs.NArg() < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: skillweave ai reorder <name1> <name2> ...\n")
+			os.Exit(1)
+		}
+		names := make([]string, 0, fs.NArg()-1)
+		for i := 1; i < fs.NArg(); i++ {
+			names = append(names, fs.Arg(i))
+		}
+		// Build a map of existing commands.
+		byName := make(map[string]AICommand, len(cfg.AICommands))
+		for _, cmd := range cfg.AICommands {
+			byName[cmd.Name] = cmd
+		}
+		// Validate all names exist.
+		for _, n := range names {
+			if _, ok := byName[n]; !ok {
+				log.Fatalf("AI tool %q not found", n)
+			}
+		}
+		// Rebuild in the requested order, append any not mentioned at the end.
+		reordered := make([]AICommand, 0, len(cfg.AICommands))
+		seen := make(map[string]bool)
+		for _, n := range names {
+			reordered = append(reordered, byName[n])
+			seen[n] = true
+		}
+		for _, cmd := range cfg.AICommands {
+			if !seen[cmd.Name] {
+				reordered = append(reordered, cmd)
+			}
+		}
+		cfg.AICommands = reordered
+		if err := SaveConfig(*cacheDir, cfg); err != nil {
+			log.Fatalf("save config: %v", err)
+		}
+		fmt.Println("AI tools reordered:")
+		for i, cmd := range cfg.AICommands {
+			fmt.Printf("  %d. %s\n", i+1, cmd.Name)
+		}
+
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown ai action: %s\n", action)
+		fs.Usage()
+		os.Exit(1)
+	}
+}
+
 func cmdPush(args []string) {
 	fs := flag.NewFlagSet("push", flag.ExitOnError)
 	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
 	commitMsg := fs.String("m", "", "Commit message (auto-generated if omitted)")
 	skipPR := fs.Bool("no-pr", false, "Push branch only, don't create a PR")
-	bobPath := fs.String("bob", "bob", "Path to bob CLI for AI-powered merging")
+	aiName := fs.String("ai", "", "Use a specific AI tool by name (default: try all in order)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: skillweave push [flags] <skill-name>\n\n")
 		fmt.Fprintf(os.Stderr, "Push skill updates to GitHub as a PR.\n")
-		fmt.Fprintf(os.Stderr, "If there are unmerged learnings in the ledger, uses bob to merge them into the SKILL.md first.\n\n")
+		fmt.Fprintf(os.Stderr, "If there are unmerged learnings in the ledger, uses a configured AI tool to merge them.\n")
+		fmt.Fprintf(os.Stderr, "AI tools are tried in order (see 'skillweave ai list'). Use --ai to pick one.\n\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -400,7 +572,23 @@ func cmdPush(args []string) {
 	updatedContent := string(currentContent)
 
 	if len(unmergedLearnings) > 0 {
-		fmt.Printf("Found %d unmerged learnings. Using bob to merge them into SKILL.md...\n", len(unmergedLearnings))
+		fmt.Printf("Found %d unmerged learnings.\n", len(unmergedLearnings))
+
+		// Determine which AI tools to try.
+		var aiTools []AICommand
+		if *aiName != "" {
+			cmd, err := cfg.FindAICommand(*aiName)
+			if err != nil {
+				log.Fatalf("%v", err)
+			}
+			aiTools = []AICommand{*cmd}
+		} else {
+			aiTools = cfg.AICommands
+		}
+
+		if len(aiTools) == 0 {
+			log.Fatalf("No AI tools configured. Run 'skillweave ai add' first.\nExample: skillweave ai add bob bob --yolo --output-format text")
+		}
 
 		prompt := fmt.Sprintf(
 			"You are updating a SKILL.md file with new learnings.\n\n"+
@@ -413,9 +601,21 @@ func cmdPush(args []string) {
 			formatLearnings(unmergedLearnings),
 		)
 
-		merged, err := runBob(*bobPath, prompt)
-		if err != nil {
-			log.Fatalf("bob merge failed: %v", err)
+		var merged string
+		var mergeErr error
+		for _, ai := range aiTools {
+			fmt.Printf("Trying %q (%s)...\n", ai.Name, ai.Command)
+			merged, mergeErr = runAI(ai, prompt)
+			if mergeErr == nil {
+				break
+			}
+			fmt.Fprintf(os.Stderr, "  %s failed: %v\n", ai.Name, mergeErr)
+			if len(aiTools) > 1 {
+				fmt.Fprintf(os.Stderr, "  Trying next AI tool...\n")
+			}
+		}
+		if mergeErr != nil {
+			log.Fatalf("All AI tools failed. Last error: %v", mergeErr)
 		}
 		updatedContent = merged
 
@@ -445,6 +645,12 @@ func cmdPush(args []string) {
 		} else {
 			*commitMsg = fmt.Sprintf("Update %s skill", skillName)
 		}
+	}
+
+	// Check if content actually changed vs origin.
+	if updatedContent == string(currentContent) && len(unmergedLearnings) == 0 {
+		fmt.Println("SKILL.md is already up to date with origin. Nothing to push.")
+		return
 	}
 
 	// Branch, commit, push.
@@ -488,18 +694,20 @@ func cmdPush(args []string) {
 	}
 }
 
-// runBob calls bob in non-interactive mode with a prompt, streams output
-// with a [bob] prefix, and returns the full output.
-func runBob(bobPath, prompt string) (string, error) {
-	cmd := exec.Command(bobPath, "--yolo", "--output-format", "text", prompt)
+// runAI calls an AI tool with a prompt, streams output with a prefix, and returns the result.
+func runAI(ai AICommand, prompt string) (string, error) {
+	args := append(ai.Args, prompt)
+	cmd := exec.Command(ai.Command, args...)
 	cmd.Stderr = os.Stderr
+
+	prefix := fmt.Sprintf("[%s]", ai.Name)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", fmt.Errorf("bob: pipe: %w", err)
+		return "", fmt.Errorf("%s: pipe: %w", ai.Name, err)
 	}
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("bob: start: %w", err)
+		return "", fmt.Errorf("%s: start: %w", ai.Name, err)
 	}
 
 	var result strings.Builder
@@ -508,11 +716,11 @@ func runBob(bobPath, prompt string) (string, error) {
 		line := scanner.Text()
 		result.WriteString(line)
 		result.WriteString("\n")
-		fmt.Printf("[bob] %s\n", line)
+		fmt.Printf("%s %s\n", prefix, line)
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return "", fmt.Errorf("bob: %w", err)
+		return "", fmt.Errorf("%s: %w", ai.Name, err)
 	}
 	return cleanBobOutput(result.String()), nil
 }

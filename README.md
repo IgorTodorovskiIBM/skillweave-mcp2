@@ -5,7 +5,16 @@ MCP server that keeps SKILL.md files up to date as you work. Register a skill, t
 ## Install
 
 ```bash
+# Private repo — tell Go to skip the checksum database
+go env -w GOPRIVATE=github.com/IgorTodorovskiIBM/skillweave
+
 go install github.com/IgorTodorovskiIBM/skillweave@latest
+```
+
+Make sure `$GOPATH/bin` is in your PATH (usually `~/go/bin`):
+
+```bash
+export PATH="$PATH:$(go env GOPATH)/bin"
 ```
 
 ## Quick start

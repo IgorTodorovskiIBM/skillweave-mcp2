@@ -19,6 +19,9 @@ import (
 )
 
 func defaultCacheDir() string {
+	if dir := os.Getenv("SKILLWEAVE_DIR"); dir != "" {
+		return dir
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatalf("cannot determine home dir: %v", err)
@@ -61,6 +64,12 @@ func main() {
 			return
 		case "ai":
 			cmdAI(os.Args[2:])
+			return
+		case "setup":
+			cmdSetup(os.Args[2:])
+			return
+		case "status":
+			cmdStatus(os.Args[2:])
 			return
 		case "help", "--help", "-h":
 			printHelp()
@@ -203,6 +212,8 @@ func cmdRegister(args []string) {
 	if *localPath != "" {
 		fmt.Printf("  local: %s\n", filepath.Join(*localPath, sPath))
 	}
+	fmt.Println()
+	printMCPConfig()
 }
 
 func cmdUnregister(args []string) {
@@ -348,13 +359,17 @@ func printHelp() {
 
 Usage: skillweave <command> [args]
 
+Getting started:
+  setup       One-command setup: register a skill and print MCP config
+  status      Show registered skills, AI tools, and unmerged learnings
+
 Commands:
   register    Register a SKILL.md for tracking
   unregister  Remove a registered skill
   list        List registered skills
   push        Push skill updates to GitHub as a PR
   ledger      Manage ledger entries (list, delete, clear)
-  ai          Configure AI tools for merging (add, list, remove)
+  ai          Configure AI tools for merging (add, list, remove, reorder)
   help        Show this help
 
 Server mode (no command):
@@ -364,6 +379,9 @@ Server flags:
   -http <addr>             HTTP listen address (default: stdio mode)
   -log-transport           Log MCP transport frames to stderr
   -cache-dir <path>        Cache directory (default: ~/.skillweave)
+
+Environment:
+  SKILLWEAVE_DIR           Override cache directory (default: ~/.skillweave)
 
 Run 'skillweave <command> --help' for details on each command.
 `)
@@ -508,6 +526,180 @@ func cmdAI(args []string) {
 	}
 }
 
+func cmdSetup(args []string) {
+	fs := flag.NewFlagSet("setup", flag.ExitOnError)
+	name := fs.String("name", "", "Skill name (auto-derived from path if omitted)")
+	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	localPath := fs.String("local-path", "", "Local checkout root (auto-detected if inside a matching repo)")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: skillweave setup [flags] <github-url>\n\n")
+		fmt.Fprintf(os.Stderr, "One-command setup: register a skill and print MCP client config.\n\n")
+		fmt.Fprintf(os.Stderr, "Examples:\n")
+		fmt.Fprintf(os.Stderr, "  skillweave setup https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md\n\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	if *cacheDir == "" {
+		*cacheDir = defaultCacheDir()
+	}
+
+	rURL, sPath, err := ParseGitHubURL(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *localPath == "" {
+		*localPath = DetectLocalPath(rURL)
+	}
+
+	skillName := *name
+	if skillName == "" {
+		skillName = DeriveSkillName(sPath)
+	}
+
+	cfg, err := LoadConfig(*cacheDir)
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+
+	skill := RegisteredSkill{
+		Name:      skillName,
+		RepoURL:   rURL,
+		SkillPath: sPath,
+		LocalPath: *localPath,
+	}
+	cfg.AddSkill(skill)
+
+	if err := SaveConfig(*cacheDir, cfg); err != nil {
+		log.Fatalf("save config: %v", err)
+	}
+
+	fmt.Printf("Registered skill %q\n", skillName)
+	fmt.Printf("  repo:  %s\n", rURL)
+	fmt.Printf("  path:  %s\n", sPath)
+	if *localPath != "" {
+		fmt.Printf("  local: %s\n", filepath.Join(*localPath, sPath))
+	}
+
+	// Check if we can clone the repo (validates the URL).
+	fmt.Println("\nFetching skill from remote...")
+	if _, err := ensureRepo(rURL, *cacheDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not fetch repo: %v\n", err)
+	} else {
+		skillFile := filepath.Join(repoCacheDir(*cacheDir, rURL), sPath)
+		if raw, err := os.ReadFile(skillFile); err == nil {
+			_, desc, _ := parseFrontmatter(string(raw))
+			if desc != "" {
+				fmt.Printf("  description: %s\n", desc)
+			}
+		}
+		fmt.Println("  OK")
+	}
+
+	fmt.Println()
+	printMCPConfig()
+
+	// Check AI tools.
+	if len(cfg.AICommands) == 0 {
+		fmt.Println("\nAI tools (for CLI push with auto-merge):")
+		found := false
+		for _, fb := range defaultAIFallbacks() {
+			if _, err := exec.LookPath(fb.Command); err == nil {
+				fmt.Printf("  Found %q on PATH (will be used automatically)\n", fb.Command)
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Println("  None found. Optional: run 'skillweave ai add' to configure one.")
+		}
+	}
+
+	fmt.Println("\nSetup complete. Start using skillweave with your MCP client.")
+}
+
+func cmdStatus(args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	fs.Parse(args)
+
+	if *cacheDir == "" {
+		*cacheDir = defaultCacheDir()
+	}
+
+	cfg, err := LoadConfig(*cacheDir)
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+
+	// Skills.
+	fmt.Printf("Skills: %d registered\n", len(cfg.Skills))
+	for _, s := range cfg.Skills {
+		entries, _ := ReadLedger(*cacheDir, s.RepoURL, s.SkillPath, 0)
+		var unmerged int
+		for _, e := range entries {
+			if e.CommitSHA == "" && len(e.Learnings) > 0 {
+				unmerged++
+			}
+		}
+		status := ""
+		if unmerged > 0 {
+			status = fmt.Sprintf(" (%d unmerged learnings)", unmerged)
+		}
+		fmt.Printf("  %s%s\n", s.Name, status)
+	}
+
+	// AI tools.
+	fmt.Printf("\nAI tools: %d configured\n", len(cfg.AICommands))
+	for i, cmd := range cfg.AICommands {
+		fmt.Printf("  %d. %s → %s\n", i+1, cmd.Name, cmd.Command)
+	}
+	if len(cfg.AICommands) == 0 {
+		found := false
+		for _, fb := range defaultAIFallbacks() {
+			if _, err := exec.LookPath(fb.Command); err == nil {
+				fmt.Printf("  (will use %q from PATH as fallback)\n", fb.Command)
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Println("  (none configured, none found on PATH)")
+		}
+	}
+
+	// Cache dir.
+	fmt.Printf("\nCache: %s\n", *cacheDir)
+}
+
+// printMCPConfig prints MCP client configuration JSON.
+func printMCPConfig() {
+	// Find the skillweave binary path.
+	binPath, err := exec.LookPath("skillweave")
+	if err != nil {
+		// Fall back to the current executable.
+		binPath, _ = os.Executable()
+	}
+	fmt.Println("Add this to your MCP client config (.mcp.json):")
+	fmt.Printf(`
+{
+  "mcpServers": {
+    "skillweave": {
+      "command": "%s",
+      "args": []
+    }
+  }
+}
+`, binPath)
+}
+
 func cmdPush(args []string) {
 	fs := flag.NewFlagSet("push", flag.ExitOnError)
 	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
@@ -587,7 +779,18 @@ func cmdPush(args []string) {
 		}
 
 		if len(aiTools) == 0 {
-			log.Fatalf("No AI tools configured. Run 'skillweave ai add' first.\nExample: skillweave ai add bob bob --yolo --output-format text")
+			// Try common AI tools from PATH as fallback.
+			for _, fallback := range defaultAIFallbacks() {
+				if _, err := exec.LookPath(fallback.Command); err == nil {
+					fmt.Fprintf(os.Stderr, "No AI tools configured. Using %q from PATH.\n", fallback.Name)
+					fmt.Fprintf(os.Stderr, "Run 'skillweave ai add' to configure permanently.\n")
+					aiTools = []AICommand{fallback}
+					break
+				}
+			}
+			if len(aiTools) == 0 {
+				log.Fatalf("No AI tools configured and none found on PATH.\nRun 'skillweave ai add' first.\nExample: skillweave ai add bob bob --yolo --output-format text")
+			}
 		}
 
 		prompt := fmt.Sprintf(
@@ -722,11 +925,11 @@ func runAI(ai AICommand, prompt string) (string, error) {
 	if err := cmd.Wait(); err != nil {
 		return "", fmt.Errorf("%s: %w", ai.Name, err)
 	}
-	return cleanBobOutput(result.String()), nil
+	return cleanAIOutput(result.String()), nil
 }
 
-// cleanBobOutput strips bob's tool-use artifacts and trailing commentary.
-func cleanBobOutput(raw string) string {
+// cleanAIOutput strips bob's tool-use artifacts and trailing commentary.
+func cleanAIOutput(raw string) string {
 	// Strip everything from "[using tool" onwards — bob appends completion markers.
 	if idx := strings.Index(raw, "[using tool"); idx >= 0 {
 		raw = raw[:idx]
@@ -736,6 +939,14 @@ func cleanBobOutput(raw string) string {
 		raw = raw[:idx]
 	}
 	return strings.TrimSpace(raw)
+}
+
+// defaultAIFallbacks returns common AI tools to try if none are configured.
+func defaultAIFallbacks() []AICommand {
+	return []AICommand{
+		{Name: "bob", Command: "bob", Args: []string{"--yolo", "--output-format", "text"}},
+		{Name: "claude", Command: "claude", Args: []string{"-p"}},
+	}
 }
 
 // formatLearnings formats a list of learnings as a bulleted list.

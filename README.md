@@ -2,30 +2,57 @@
 
 MCP server that keeps SKILL.md files up to date as you work. Register a skill, the LLM loads it at session start, learns from corrections during the session, and writes the updated skill locally. Push to GitHub as a PR when ready to share with the team.
 
+## Install
+
+```bash
+go install github.com/IgorTodorovskiIBM/skillweave@latest
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/IgorTodorovskiIBM/skillweave.git
+cd skillweave
+go build .
+```
+
 ## Quick start
 
 ```bash
-# Register a skill (auto-detects local checkout if you're inside the repo)
-skillweave register \
-  https://github.com/IgorTodorovskiIBM/zos-porting/blob/main/skills/zos-porting-cli/SKILL.md
+# One command: register a skill and get your MCP config
+skillweave setup https://github.com/user/repo/blob/main/skills/zos-porting-cli/SKILL.md
 
-# Start the MCP server (stdio mode)
-./skillweave
+# Paste the printed JSON into your MCP client config (.mcp.json)
+# Done. Start a session and the skill appears as a tool.
 ```
 
 ## How it works
 
-1. **You register a skill once** via CLI, pointing at a GitHub URL and optionally your local checkout
+1. **You register a skill once** — point at a GitHub URL, local checkout is auto-detected
 2. **Each skill becomes its own MCP tool** (`skill_zos_porting_cli`) with the description from the SKILL.md frontmatter
-3. **On startup, the server checks for remote updates** — fetches and compares against the cache, pulling only when the skill file has changed
+3. **On startup, the server checks for remote updates** — fetches and pulls only when the skill file has changed
 4. **The LLM calls the skill tool** to load it — no separate boot step needed
 5. **You work normally** — the LLM pays attention to corrections and patterns it discovers
-6. **The LLM calls `skill_update`** when it has enough learnings — writes the updated SKILL.md locally (both to cache and your working copy)
-7. **You push via LLM or CLI** — `skill_push` (MCP) or `skillweave push` (CLI) creates a PR; teammates review and merge
-
-The server instructions tell the LLM when to update: after multiple corrections on the same topic, when it discovers a new pattern, when the user asks, or when a session ends with meaningful learnings.
+6. **The LLM calls `skill_update`** when it has enough learnings — writes the updated SKILL.md locally
+7. **You push via LLM or CLI** — creates a PR; teammates review and merge
 
 ## CLI commands
+
+### `setup`
+
+One-command onboarding: registers a skill, fetches it, and prints your MCP config.
+
+```bash
+skillweave setup https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md
+```
+
+### `status`
+
+See everything at a glance: registered skills, unmerged learnings, AI tools.
+
+```bash
+skillweave status
+```
 
 ### `register`
 
@@ -41,9 +68,6 @@ skillweave register https://github.com/user/repo/blob/main/skills/zos-porting-cl
 skillweave register \
   --local-path ~/Projects/zos-porting \
   https://github.com/user/repo/blob/main/skills/zos-porting-cli/SKILL.md
-
-# With explicit repo + path
-skillweave register --repo git@github.com:user/repo.git --path skills/my-skill/SKILL.md
 
 # Override the auto-derived name
 skillweave register --name my-custom-name https://github.com/user/repo/blob/main/SKILL.md
@@ -64,7 +88,7 @@ skillweave list
 ### `push`
 
 ```bash
-# Push with auto-generated commit message (merges unmerged learnings via bob)
+# Push with auto-generated commit message
 skillweave push zos-porting-cli
 
 # With a custom commit message
@@ -73,11 +97,32 @@ skillweave push -m "Add patch conflict tips" zos-porting-cli
 # Push branch only, no PR
 skillweave push --no-pr zos-porting-cli
 
-# Use a specific bob binary path
-skillweave push --bob /home/itodoro/bin/bob zos-porting-cli
+# Use a specific AI tool for merging
+skillweave push --ai gemini zos-porting-cli
 ```
 
-If there are unmerged learnings in the ledger (from `skill_update` calls that haven't been pushed yet), `push` uses bob to intelligently merge them into the SKILL.md before committing. Bob's output streams with a `[bob]` prefix so you can see what's happening. If no unmerged learnings exist, it pushes the current SKILL.md as-is. After a successful push, learnings are marked as merged so they won't be reprocessed.
+If there are unmerged learnings in the ledger, `push` uses a configured AI tool to merge them into the SKILL.md before committing. AI tools are tried in order (see `skillweave ai list`). If none are configured, it tries `bob` or `claude` from PATH automatically. Output streams with a `[toolname]` prefix. After a successful push, learnings are marked as merged.
+
+### `ai`
+
+Configure AI tools used for merging learnings during CLI push.
+
+```bash
+# Add AI tools (prompt is appended as the last argument)
+skillweave ai add bob bob --yolo --output-format text
+skillweave ai add gemini /path/to/gemini.mjs -p
+
+# List configured tools (order = fallback priority)
+skillweave ai list
+
+# Reorder (first = tried first)
+skillweave ai reorder gemini bob
+
+# Remove
+skillweave ai remove gemini
+```
+
+If no AI tools are configured, `push` automatically tries `bob` and `claude` from PATH.
 
 ### `ledger`
 
@@ -92,11 +137,9 @@ skillweave ledger delete zos-porting-cli <entry-id>
 skillweave ledger clear zos-porting-cli
 ```
 
-Config is stored in `~/.skillweave/skills.json`.
-
 ## MCP Tools
 
-Each registered skill is exposed as its own tool, named `skill_<name>` (e.g. `skill_zos_porting_cli`). The tool description comes from the SKILL.md YAML frontmatter. Calling the tool loads the skill and returns its content + a session ID.
+Each registered skill is exposed as its own tool, named `skill_<name>` (e.g. `skill_zos_porting_cli`). The tool description comes from the SKILL.md YAML frontmatter.
 
 ### `skill_update`
 
@@ -107,8 +150,6 @@ Each registered skill is exposed as its own tool, named `skill_<name>` (e.g. `sk
 | `learnings` | yes | List of things learned (corrections, tips, patterns) |
 | `updated_content` | yes | Full new SKILL.md with learnings incorporated |
 
-Writes locally — to the cache and to your local checkout (if `--local-path` was registered). Also records a ledger entry. Accepts either `session_id` or `skill_name` — if the session expired (e.g. server restarted), `skill_name` creates an ad-hoc session from the registered config.
-
 ### `skill_push`
 
 | Param | Required | Description |
@@ -118,23 +159,26 @@ Writes locally — to the cache and to your local checkout (if `--local-path` wa
 | `commit_message` | yes | Commit message |
 | `skip_pr` | no | Skip PR creation, push branch only (default `false`) |
 
-Creates a branch, commits, pushes, and opens a PR. Call `skill_update` first.
+## Configuration
+
+Config is stored in `~/.skillweave/skills.json` (or `$SKILLWEAVE_DIR/skills.json`).
+
+| Setting | Description |
+|---------|-------------|
+| `SKILLWEAVE_DIR` | Override cache directory (default `~/.skillweave`) |
+| `--cache-dir` | Per-command override (takes precedence over env var) |
 
 ## Architecture
 
 ```
 skillweave/
-├── main.go           # CLI subcommands (register, unregister, list, push, ledger) + MCP server setup
-├── config.go         # Skill registration (skills.json, GitHub URL parsing, frontmatter, local path detection)
-├── tools.go          # Dynamic skill tools + skill_update + skill_push
-├── git.go            # Git operations (clone, fetch, update check, commit, push, branch, PR)
+├── main.go           # CLI (setup, register, push, status, ai, ledger) + MCP server
+├── config.go         # Skills + AI tool config, GitHub URL parsing, frontmatter
+├── tools.go          # Dynamic MCP tools (skill_*, skill_update, skill_push)
+├── git.go            # Git operations (clone, fetch, update check, commit, push, PR)
 ├── session.go        # In-memory session state
-├── ledger.go         # Immutable changelog entries (write, read, mark merged, delete, clear)
-├── scripts/
-│   ├── ssh-zos.sh              # SSH to z/OS through jump host
-│   ├── sync-and-build.sh       # Rsync + remote Go build on z/OS
-│   ├── start-mcp-server.sh     # Start server on z/OS with port forwarding
-│   └── bootstrap-mcp-config.sh # Verify prereqs + print MCP config JSON
+├── ledger.go         # Update history (write, read, mark merged, delete, clear)
+├── scripts/          # z/OS deployment scripts
 ├── go.mod
 └── Makefile
 ```
@@ -143,14 +187,14 @@ skillweave/
 
 ```
 ~/.skillweave/
-├── skills.json       # Registered skills
+├── skills.json       # Registered skills + AI tool config
 ├── repos/            # Cached repo clones (keyed by normalized URL hash)
 │   └── <hash>/
 └── ledger/           # Update history
     └── <repo-hash>/
         └── <skill-path-hash>/
             └── YYYY/MM/DD/
-                └── <id>.json   # {learnings, commit_sha, pr_url, timestamp}
+                └── <id>.json
 ```
 
 ## Build
@@ -167,9 +211,9 @@ make test     # go test
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-http` | *(empty — stdio mode)* | HTTP listen address (e.g. `:8080`) |
+| `-http` | *(stdio mode)* | HTTP listen address (e.g. `:8080`) |
 | `-log-transport` | `false` | Log MCP transport frames to stderr |
-| `-cache-dir` | `~/.skillweave` | Directory for cached repos, ledger, and config |
+| `-cache-dir` | `~/.skillweave` | Override cache directory |
 
 ## z/OS deployment
 
@@ -178,18 +222,6 @@ Prerequisites: Go 1.23+, git, and `gh` (GitHub CLI).
 ```bash
 ./scripts/sync-and-build.sh              # rsync + go build on z/OS
 ./scripts/sync-and-build.sh --test       # also run go test
-./scripts/start-mcp-server.sh            # start on z/OS with port forward (default 7377)
-./scripts/bootstrap-mcp-config.sh        # verify prereqs + print MCP config JSON
+./scripts/start-mcp-server.sh            # start on z/OS with port forward
+./scripts/bootstrap-mcp-config.sh        # verify prereqs + print MCP config
 ```
-
-### Environment overrides
-
-| Variable | Default |
-|----------|---------|
-| `JUMP_USER` | `itodorov` |
-| `JUMP_HOST` | `rogi21.fyre.ibm.com` |
-| `ZOS_HOST` | `zoscan2b.pok.stglabs.ibm.com` |
-| `ZOS_USER` | `itodoro` |
-| `ZOS_DIR` | `skillweave` |
-| `GO_BIN` | `/home/itodoro/install_test/go1.25/bin` |
-| `RSYNC_PATH` | `/home/itodoro/zopen/usr/local/bin/rsync` |

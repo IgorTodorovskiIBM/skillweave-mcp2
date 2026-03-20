@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -82,11 +83,14 @@ func checkForUpdates(localPath, skillPath string) (bool, error) {
 	// Compare the skill file between HEAD and origin.
 	cmd = exec.Command("git", "-C", localPath, "diff", "--quiet", "HEAD", "origin/"+branch, "--", skillPath)
 	err = cmd.Run()
-	if err != nil {
-		// Exit code 1 means there are differences.
+	if err == nil {
+		return false, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 		return true, nil
 	}
-	return false, nil
+	return false, fmt.Errorf("git diff: %w", err)
 }
 
 // cloneRepo clones a fresh copy of the repo.

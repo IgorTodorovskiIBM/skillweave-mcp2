@@ -27,6 +27,62 @@ type SkillPushParams struct {
 	SkipPR        bool   `json:"skip_pr,omitempty" jsonschema:"set true to push branch only without creating a PR (default false)"`
 }
 
+// resolveSession tries session_id first, then falls back to skill_name.
+// When falling back to a registered skill, it ensures the cached repo exists
+// before creating an ad-hoc session.
+func resolveSession(sessions *SessionManager, cfg *SkillConfig, cacheDir, sessionID, skillName string) (*Session, error) {
+	if sessionID != "" {
+		if s, err := sessions.Get(sessionID); err == nil {
+			return s, nil
+		}
+	}
+	if skillName == "" {
+		return nil, fmt.Errorf("provide session_id or skill_name")
+	}
+	if s, err := sessions.FindBySkillName(skillName); err == nil {
+		return s, nil
+	}
+
+	skill, err := cfg.FindSkill(skillName)
+	if err != nil {
+		return nil, err
+	}
+	localRepoPath, err := ensureRepo(skill.RepoURL, cacheDir)
+	if err != nil {
+		return nil, fmt.Errorf("fetch repo: %w", err)
+	}
+	content, err := os.ReadFile(filepath.Join(localRepoPath, skill.SkillPath))
+	if err != nil {
+		return nil, fmt.Errorf("read SKILL.md: %w", err)
+	}
+
+	var localFilePath string
+	if skill.LocalPath != "" {
+		lp := filepath.Join(skill.LocalPath, skill.SkillPath)
+		if _, err := os.Stat(lp); err == nil {
+			localFilePath = lp
+		}
+	}
+
+	return sessions.Create(skill.Name, skill.RepoURL, skill.SkillPath, localRepoPath, localFilePath, string(content)), nil
+}
+
+func sessionLearningEntryIDs(cacheDir string, session *Session) ([]string, error) {
+	entries, err := ReadLedger(cacheDir, session.RepoURL, session.SkillPath, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	var ids []string
+	for _, e := range entries {
+		if e.SessionID != session.ID || e.CommitSHA != "" || len(e.Learnings) == 0 {
+			continue
+		}
+		ids = append(ids, e.ID)
+	}
+	return ids, nil
+}
+
 // registerTools registers all MCP tools on the server.
 func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, cacheDir string) {
 
@@ -102,41 +158,17 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		})
 	}
 
-	// resolveSession tries session_id first, then falls back to skill_name
-	// by looking up the registered skill and creating an ad-hoc session.
-	resolveSession := func(sessionID, skillName string) (*Session, error) {
-		if sessionID != "" {
-			if s, err := sessions.Get(sessionID); err == nil {
-				return s, nil
-			}
-		}
-		if skillName != "" {
-			skill, err := cfg.FindSkill(skillName)
-			if err != nil {
-				return nil, err
-			}
-			localRepoPath := repoCacheDir(cacheDir, skill.RepoURL)
-			var localFilePath string
-			if skill.LocalPath != "" {
-				lp := filepath.Join(skill.LocalPath, skill.SkillPath)
-				if _, err := os.Stat(lp); err == nil {
-					localFilePath = lp
-				}
-			}
-			content, _ := os.ReadFile(filepath.Join(localRepoPath, skill.SkillPath))
-			return sessions.Create(skill.Name, skill.RepoURL, skill.SkillPath, localRepoPath, localFilePath, string(content)), nil
-		}
-		return nil, fmt.Errorf("provide session_id or skill_name")
-	}
-
 	// --- skill_update ---
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "skill_update",
 		Description: "Save an updated SKILL.md locally. Call this when the user has corrected you multiple times, you discovered a new pattern or fix, the user asks you to update the skill, or the session is ending with meaningful learnings. Pass your learnings as a list and the full updated SKILL.md content.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillUpdateParams) (*mcp.CallToolResult, map[string]any, error) {
-		session, err := resolveSession(in.SessionID, in.SkillName)
+		session, err := resolveSession(sessions, cfg, cacheDir, in.SessionID, in.SkillName)
 		if err != nil {
 			return textResult("Error: " + err.Error()), map[string]any{}, nil
+		}
+		if err := validateMergedContent(session.OrigContent, in.UpdatedContent); err != nil {
+			return textResult("Error: invalid updated content: " + err.Error()), map[string]any{}, nil
 		}
 
 		// Always write to the cache repo.
@@ -189,25 +221,13 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		Name:        "skill_push",
 		Description: "Push the updated SKILL.md to GitHub as a PR. Call skill_update first to save locally, then call this when the user wants to share the changes with the team.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillPushParams) (*mcp.CallToolResult, map[string]any, error) {
-		session, err := resolveSession(in.SessionID, in.SkillName)
+		session, err := resolveSession(sessions, cfg, cacheDir, in.SessionID, in.SkillName)
 		if err != nil {
 			return textResult("Error: " + err.Error()), map[string]any{}, nil
 		}
 
-		// Check if there's something to push: either skill_update was called this session,
-		// or there are unmerged ledger entries from previous sessions.
 		if !session.Saved {
-			entries, _ := ReadLedger(cacheDir, session.RepoURL, session.SkillPath, 0)
-			hasUnmerged := false
-			for _, e := range entries {
-				if e.CommitSHA == "" && len(e.Learnings) > 0 {
-					hasUnmerged = true
-					break
-				}
-			}
-			if !hasUnmerged {
-				return textResult("Error: nothing to push. Call skill_update first to save changes, or use the CLI 'skillweave push' if there are unmerged learnings."), map[string]any{}, nil
-			}
+			return textResult("Error: nothing to push. Call skill_update first to save changes. Use the CLI 'skillweave push' to merge and push ledgered learnings from previous sessions."), map[string]any{}, nil
 		}
 
 		createPRFlag := !in.SkipPR
@@ -224,6 +244,13 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		if _, err := ensureRepo(session.RepoURL, cacheDir); err != nil {
 			return textResult("Error fetching latest from remote: " + err.Error()), map[string]any{}, nil
 		}
+		latestContent, err := os.ReadFile(cachePath)
+		if err != nil {
+			return textResult("Error reading upstream file: " + err.Error()), map[string]any{}, nil
+		}
+		if string(content) == string(latestContent) {
+			return textResult("Nothing to push. The saved SKILL.md matches the latest upstream content."), map[string]any{}, nil
+		}
 
 		branch := fmt.Sprintf("skill-update/%s/%s", session.SkillName, time.Now().Format("20060102-150405"))
 
@@ -236,26 +263,31 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 			return textResult("Error pushing: " + err.Error()), map[string]any{}, nil
 		}
 
+		mergedEntryIDs, err := sessionLearningEntryIDs(cacheDir, session)
+		if err != nil {
+			return textResult("Error reading ledger: " + err.Error()), map[string]any{}, nil
+		}
+
 		var prURL string
+		var prWarning string
 		if createPRFlag {
 			body := buildPRBody(in.CommitMessage)
 			prURL, err = createPR(session.LocalRepoPath, branch, in.CommitMessage, body)
 			if err != nil {
-				msg := fmt.Sprintf(
-					"Pushed to branch %q (commit %s) but PR creation failed: %s\n\n"+
+				prWarning = fmt.Sprintf(
+					"\n\nPR creation failed: %s\n\n"+
 						"ACTION REQUIRED: Create the PR manually:\n"+
 						"  gh pr create --head %s --title %q\n\n"+
 						"Common fixes:\n"+
 						"  - Install gh: https://cli.github.com\n"+
 						"  - Authenticate: gh auth login",
-					branch, commitSHA, err.Error(), branch, in.CommitMessage,
+					err.Error(), branch, in.CommitMessage,
 				)
-				return textResult(msg), map[string]any{}, nil
 			}
 		}
 
-		// Mark old learnings as merged, then record the push.
-		if err := MarkLedgerMerged(cacheDir, session.RepoURL, session.SkillPath, commitSHA); err != nil {
+		// Mark the learnings recorded for this session as merged, then record the push.
+		if err := MarkLedgerEntriesMerged(cacheDir, session.RepoURL, session.SkillPath, mergedEntryIDs, commitSHA); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to mark ledger entries as merged: %v\n", err)
 		}
 		entry := LedgerEntry{
@@ -276,7 +308,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		if prURL != "" {
 			return textResult(fmt.Sprintf("PR created: %s\nCommit: %s", prURL, commitSHA)), map[string]any{}, nil
 		}
-		return textResult(fmt.Sprintf("Pushed to branch: %s\nCommit: %s", branch, commitSHA)), map[string]any{}, nil
+		return textResult(fmt.Sprintf("Pushed to branch: %s\nCommit: %s%s", branch, commitSHA, prWarning)), map[string]any{}, nil
 	})
 }
 

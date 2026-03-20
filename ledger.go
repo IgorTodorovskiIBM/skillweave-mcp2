@@ -140,14 +140,22 @@ func ClearLedger(cacheDir, repoURL, skillPath string) (int, error) {
 	return count, err
 }
 
-// MarkLedgerMerged stamps all learnings-only entries (no CommitSHA) with the
+// MarkLedgerEntriesMerged stamps the selected learnings-only entries with the
 // given commit SHA so they are not picked up as "unmerged" again.
-func MarkLedgerMerged(cacheDir, repoURL, skillPath, commitSHA string) error {
+func MarkLedgerEntriesMerged(cacheDir, repoURL, skillPath string, entryIDs []string, commitSHA string) error {
+	if len(entryIDs) == 0 {
+		return nil
+	}
+
 	repoHash := hashString(normalizeRepoURL(repoURL))
 	skillHash := hashString(skillPath)
 	baseDir := filepath.Join(cacheDir, "ledger", repoHash, skillHash)
+	remaining := make(map[string]struct{}, len(entryIDs))
+	for _, id := range entryIDs {
+		remaining[id] = struct{}{}
+	}
 
-	return filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(baseDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || filepath.Ext(path) != ".json" {
 			return nil
 		}
@@ -159,7 +167,11 @@ func MarkLedgerMerged(cacheDir, repoURL, skillPath, commitSHA string) error {
 		if err := json.Unmarshal(data, &e); err != nil {
 			return nil
 		}
+		if _, ok := remaining[e.ID]; !ok {
+			return nil
+		}
 		if e.CommitSHA != "" || len(e.Learnings) == 0 {
+			delete(remaining, e.ID)
 			return nil
 		}
 		e.CommitSHA = commitSHA
@@ -167,6 +179,25 @@ func MarkLedgerMerged(cacheDir, repoURL, skillPath, commitSHA string) error {
 		if err != nil {
 			return nil
 		}
-		return os.WriteFile(path, updated, 0o644)
+		if err := os.WriteFile(path, updated, 0o644); err != nil {
+			return nil
+		}
+		delete(remaining, e.ID)
+		if len(remaining) == 0 {
+			return filepath.SkipAll
+		}
+		return nil
 	})
+	if err != nil && err != filepath.SkipAll {
+		return err
+	}
+	if len(remaining) > 0 {
+		missing := make([]string, 0, len(remaining))
+		for id := range remaining {
+			missing = append(missing, id)
+		}
+		sort.Strings(missing)
+		return fmt.Errorf("ledger entries not found: %v", missing)
+	}
+	return nil
 }

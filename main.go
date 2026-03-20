@@ -546,16 +546,22 @@ func cmdSetup(args []string) {
 		skillName = DeriveSkillName(sPath)
 	}
 
-	cfg, err := LoadConfig(*cacheDir)
-	if err != nil {
-		log.Fatalf("load config: %v", err)
-	}
-
 	skill := RegisteredSkill{
 		Name:      skillName,
 		RepoURL:   rURL,
 		SkillPath: sPath,
 		LocalPath: *localPath,
+	}
+
+	fmt.Println("\nFetching skill from remote...")
+	desc, err := loadRegisteredSkill(*cacheDir, skill)
+	if err != nil {
+		log.Fatalf("validate skill: %v", err)
+	}
+
+	cfg, err := LoadConfig(*cacheDir)
+	if err != nil {
+		log.Fatalf("load config: %v", err)
 	}
 	cfg.AddSkill(skill)
 
@@ -569,25 +575,10 @@ func cmdSetup(args []string) {
 	if *localPath != "" {
 		fmt.Printf("  local: %s\n", filepath.Join(*localPath, sPath))
 	}
-
-	// Check if we can clone the repo (validates the URL).
-	fmt.Println("\nFetching skill from remote...")
-	if _, err := ensureRepo(rURL, *cacheDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not fetch repo: %v\n", err)
-		fmt.Fprintf(os.Stderr, "  The skill was registered but will not be available until the repo is accessible.\n")
-		fmt.Fprintf(os.Stderr, "  Common fixes:\n")
-		fmt.Fprintf(os.Stderr, "    - Check SSH keys: ssh -T git@github.com\n")
-		fmt.Fprintf(os.Stderr, "    - For private repos: go env -w GOPRIVATE=github.com/...\n")
-	} else {
-		skillFile := filepath.Join(repoCacheDir(*cacheDir, rURL), sPath)
-		if raw, err := os.ReadFile(skillFile); err == nil {
-			_, desc, _ := parseFrontmatter(string(raw))
-			if desc != "" {
-				fmt.Printf("  description: %s\n", desc)
-			}
-		}
-		fmt.Println("  OK")
+	if desc != "" {
+		fmt.Printf("  description: %s\n", desc)
 	}
+	fmt.Println("  OK")
 
 	fmt.Println()
 	printMCPConfig()
@@ -663,6 +654,21 @@ func cmdStatus(args []string) {
 
 	// Cache dir.
 	fmt.Printf("\nCache: %s\n", *cacheDir)
+}
+
+func loadRegisteredSkill(cacheDir string, skill RegisteredSkill) (string, error) {
+	localRepoPath, err := ensureRepo(skill.RepoURL, cacheDir)
+	if err != nil {
+		return "", fmt.Errorf("fetch repo: %w", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(localRepoPath, skill.SkillPath))
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", skill.SkillPath, err)
+	}
+
+	_, desc, _ := parseFrontmatter(string(raw))
+	return desc, nil
 }
 
 // printMCPConfig prints MCP client configuration JSON.
@@ -741,14 +747,10 @@ func cmdPush(args []string) {
 		log.Fatalf("read ledger: %v", err)
 	}
 
-	var unmergedLearnings []string
-	for _, e := range entries {
-		if e.CommitSHA == "" && len(e.Learnings) > 0 {
-			unmergedLearnings = append(unmergedLearnings, e.Learnings...)
-		}
-	}
+	selectedEntryIDs, unmergedLearnings := collectUnmergedLearnings(entries)
 
 	updatedContent := string(currentContent)
+	var prURL string
 
 	if len(unmergedLearnings) > 0 {
 		fmt.Printf("Found %d unmerged learnings.\n", len(unmergedLearnings))
@@ -807,26 +809,15 @@ func cmdPush(args []string) {
 		if mergeErr != nil {
 			log.Fatalf("All AI tools failed. Last error: %v", mergeErr)
 		}
+		if err := validateMergedContent(string(currentContent), merged); err != nil {
+			log.Fatalf("invalid AI output: %v", err)
+		}
 		updatedContent = merged
-
-		// Write merged content back to cache.
-		if err := os.WriteFile(skillFile, []byte(updatedContent), 0o644); err != nil {
-			log.Fatalf("write merged SKILL.md: %v", err)
-		}
-		fmt.Println("SKILL.md updated with merged learnings.")
-
-		// Also write to local checkout if registered.
-		if skill.LocalPath != "" {
-			localFile := filepath.Join(skill.LocalPath, skill.SkillPath)
-			if err := os.MkdirAll(filepath.Dir(localFile), 0o755); err == nil {
-				if err := os.WriteFile(localFile, []byte(updatedContent), 0o644); err == nil {
-					fmt.Printf("Also written to: %s\n", localFile)
-				}
-			}
-		}
 	} else {
 		fmt.Println("No unmerged learnings. Pushing current SKILL.md as-is.")
 	}
+
+	contentChanged := updatedContent != string(currentContent)
 
 	// Generate commit message if not provided.
 	if *commitMsg == "" {
@@ -837,9 +828,12 @@ func cmdPush(args []string) {
 		}
 	}
 
-	// Check if content actually changed vs origin.
-	if updatedContent == string(currentContent) && len(unmergedLearnings) == 0 {
-		fmt.Println("SKILL.md is already up to date with origin. Nothing to push.")
+	if !contentChanged {
+		if len(unmergedLearnings) > 0 {
+			fmt.Println("Merged learnings produced no SKILL.md changes. Nothing to push; ledger entries remain unmerged.")
+		} else {
+			fmt.Println("SKILL.md is already up to date with origin. Nothing to push.")
+		}
 		return
 	}
 
@@ -848,6 +842,18 @@ func cmdPush(args []string) {
 		fmt.Print("\n--- Dry run: showing diff (no changes will be pushed) ---\n\n")
 		showDiff(string(currentContent), updatedContent, skill.SkillPath)
 		return
+	}
+
+	if len(unmergedLearnings) > 0 {
+		fmt.Println("SKILL.md updated with merged learnings.")
+		if skill.LocalPath != "" {
+			localFile := filepath.Join(skill.LocalPath, skill.SkillPath)
+			if err := os.MkdirAll(filepath.Dir(localFile), 0o755); err == nil {
+				if err := os.WriteFile(localFile, []byte(updatedContent), 0o644); err == nil {
+					fmt.Printf("Also written to: %s\n", localFile)
+				}
+			}
+		}
 	}
 
 	// Branch, commit, push.
@@ -866,7 +872,7 @@ func cmdPush(args []string) {
 
 	if !*skipPR {
 		body := buildPRBody(*commitMsg)
-		prURL, err := createPR(localRepoPath, branch, *commitMsg, body)
+		prURL, err = createPR(localRepoPath, branch, *commitMsg, body)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\n*** ACTION REQUIRED: PR creation failed ***\n")
 			fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
@@ -881,8 +887,8 @@ func cmdPush(args []string) {
 		}
 	}
 
-	// Mark old learnings-only entries as merged, then record the push.
-	if err := MarkLedgerMerged(*cacheDir, skill.RepoURL, skill.SkillPath, commitSHA); err != nil {
+	// Mark the exact learnings merged into this push, then record the push.
+	if err := MarkLedgerEntriesMerged(*cacheDir, skill.RepoURL, skill.SkillPath, selectedEntryIDs, commitSHA); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to mark ledger entries as merged: %v\n", err)
 	}
 	entry := LedgerEntry{
@@ -891,6 +897,7 @@ func cmdPush(args []string) {
 		SkillPath: skill.SkillPath,
 		Learnings: unmergedLearnings,
 		CommitSHA: commitSHA,
+		PRUrl:     prURL,
 		Timestamp: time.Now(),
 	}
 	if err := WriteLedger(*cacheDir, entry); err != nil {
@@ -916,11 +923,15 @@ func runAI(ai AICommand, prompt string) (string, error) {
 
 	var result strings.Builder
 	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		result.WriteString(line)
 		result.WriteString("\n")
 		fmt.Printf("%s %s\n", prefix, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("%s: read stdout: %w", ai.Name, err)
 	}
 
 	if err := cmd.Wait(); err != nil {
@@ -948,6 +959,41 @@ func defaultAIFallbacks() []AICommand {
 		{Name: "bob", Command: "bob", Args: []string{"--yolo", "--output-format", "text"}},
 		{Name: "claude", Command: "claude", Args: []string{"-p"}},
 	}
+}
+
+func collectUnmergedLearnings(entries []LedgerEntry) ([]string, []string) {
+	var entryIDs []string
+	var learnings []string
+	for _, e := range entries {
+		if e.CommitSHA != "" || len(e.Learnings) == 0 {
+			continue
+		}
+		entryIDs = append(entryIDs, e.ID)
+		learnings = append(learnings, e.Learnings...)
+	}
+	return entryIDs, learnings
+}
+
+func validateMergedContent(original, merged string) error {
+	originalTrimmed := strings.TrimSpace(original)
+	mergedTrimmed := strings.TrimSpace(merged)
+
+	if mergedTrimmed == "" {
+		return fmt.Errorf("AI output is empty")
+	}
+	if strings.HasPrefix(mergedTrimmed, "```") {
+		return fmt.Errorf("AI output appears to be wrapped in code fences")
+	}
+	if strings.HasPrefix(originalTrimmed, "---") && !strings.HasPrefix(mergedTrimmed, "---") {
+		return fmt.Errorf("AI output dropped YAML frontmatter")
+	}
+	if strings.Contains(originalTrimmed, "\n") && !strings.Contains(mergedTrimmed, "\n") {
+		return fmt.Errorf("AI output is unexpectedly short")
+	}
+	if len(originalTrimmed) >= 200 && len(mergedTrimmed) < len(originalTrimmed)/2 {
+		return fmt.Errorf("AI output is much shorter than the current SKILL.md")
+	}
+	return nil
 }
 
 // formatLearnings formats a list of learnings as a bulleted list.

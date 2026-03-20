@@ -23,46 +23,79 @@ func repoCacheDir(cacheDir, repoURL string) string {
 
 // ensureRepo clones or pulls a repository, returning the local path.
 func ensureRepo(repoURL, cacheDir string) (string, error) {
+	logger := GetLogger().WithFields(map[string]interface{}{
+		"repo_url": repoURL,
+		"operation": "ensure_repo",
+	})
+	logger.Debug("ensuring repository is cached")
+	
 	localPath := repoCacheDir(cacheDir, repoURL)
 
 	if _, err := os.Stat(filepath.Join(localPath, ".git")); err == nil {
+		logger.Debug("repository cache exists, fetching updates")
 		// Repo exists — fetch and reset to origin default branch.
 		cmd := exec.Command("git", "-C", localPath, "fetch", "origin")
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("git fetch: %s: %w", out, err)
+			logger.WithError(err).Error("git fetch failed")
+			return "", WrapErrorWithFields("git fetch", err, map[string]interface{}{
+				"output": string(out),
+				"local_path": localPath,
+			})
 		}
+		logger.Debug("git fetch completed successfully")
 
 		// Determine default branch.
 		branch, err := defaultBranch(localPath)
 		if err != nil {
-			return "", err
+			logger.WithError(err).Error("failed to determine default branch")
+			return "", WrapError("determine default branch", err)
 		}
+		logger.WithField("branch", branch).Debug("determined default branch")
 
 		// Clean up any uncommitted changes and stale branches.
 		exec.Command("git", "-C", localPath, "checkout", "--", ".").Run()
 		cmd = exec.Command("git", "-C", localPath, "checkout", branch)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("git checkout: %s: %w", out, err)
+			logger.WithError(err).Error("git checkout failed")
+			return "", WrapErrorWithFields("git checkout", err, map[string]interface{}{
+				"output": string(out),
+				"branch": branch,
+			})
 		}
+		logger.WithField("branch", branch).Debug("checked out branch")
+		
 		cmd = exec.Command("git", "-C", localPath, "reset", "--hard", "origin/"+branch)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("git reset: %s: %w", out, err)
+			logger.WithError(err).Error("git reset failed")
+			return "", WrapErrorWithFields("git reset", err, map[string]interface{}{
+				"output": string(out),
+				"branch": branch,
+			})
 		}
+		logger.Debug("reset to origin branch")
 
 		// Delete local skill-update branches left over from failed pushes.
 		listCmd := exec.Command("git", "-C", localPath, "branch", "--list", "skill-update/*")
 		if branchOut, err := listCmd.Output(); err == nil {
-			for _, b := range strings.Split(strings.TrimSpace(string(branchOut)), "\n") {
+			branches := strings.Split(strings.TrimSpace(string(branchOut)), "\n")
+			var cleaned int
+			for _, b := range branches {
 				b = strings.TrimSpace(b)
 				if b != "" {
 					exec.Command("git", "-C", localPath, "branch", "-D", b).Run()
+					cleaned++
 				}
+			}
+			if cleaned > 0 {
+				logger.WithField("count", cleaned).Debug("cleaned up stale branches")
 			}
 		}
 
+		logger.Info("repository cache updated successfully")
 		return localPath, nil
 	}
 
+	logger.Debug("repository cache not found, cloning")
 	return cloneRepo(repoURL, localPath)
 }
 
@@ -95,13 +128,27 @@ func checkForUpdates(localPath, skillPath string) (bool, error) {
 
 // cloneRepo clones a fresh copy of the repo.
 func cloneRepo(repoURL, localPath string) (string, error) {
+	logger := GetLogger().WithFields(map[string]interface{}{
+		"repo_url": repoURL,
+		"local_path": localPath,
+		"operation": "clone_repo",
+	})
+	logger.Info("cloning repository")
+	
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
-		return "", fmt.Errorf("mkdir: %w", err)
+		logger.WithError(err).Error("failed to create directory")
+		return "", WrapError("mkdir", err)
 	}
+	
 	cmd := exec.Command("git", "clone", repoURL, localPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git clone: %s: %w", out, err)
+		logger.WithError(err).Error("git clone failed")
+		return "", WrapErrorWithFields("git clone", err, map[string]interface{}{
+			"output": string(out),
+		})
 	}
+	
+	logger.Info("repository cloned successfully")
 	return localPath, nil
 }
 
@@ -126,56 +173,104 @@ func defaultBranch(localPath string) (string, error) {
 
 // createBranchAndCommit creates a new branch from the default branch, writes the skill content, and commits.
 func createBranchAndCommit(localPath, skillPath, content, message, branch string) (string, error) {
+	logger := GetLogger().WithFields(map[string]interface{}{
+		"local_path": localPath,
+		"branch": branch,
+		"operation": "create_branch_and_commit",
+	})
+	logger.Info("creating branch and committing changes")
+	
 	defBranch, err := defaultBranch(localPath)
 	if err != nil {
-		return "", err
+		logger.WithError(err).Error("failed to determine default branch")
+		return "", WrapError("determine default branch", err)
 	}
+	logger.WithField("default_branch", defBranch).Debug("determined default branch")
 
 	// Create and checkout new branch from default.
 	cmd := exec.Command("git", "-C", localPath, "checkout", "-b", branch, "origin/"+defBranch)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git checkout -b: %s: %w", out, err)
+		logger.WithError(err).Error("failed to create branch")
+		return "", WrapErrorWithFields("git checkout -b", err, map[string]interface{}{
+			"output": string(out),
+		})
 	}
+	logger.Debug("created and checked out new branch")
 
 	// Write the updated SKILL.md.
 	fullPath := filepath.Join(localPath, skillPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		return "", fmt.Errorf("mkdir for skill: %w", err)
+		logger.WithError(err).Error("failed to create skill directory")
+		return "", WrapError("mkdir for skill", err)
 	}
 	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
-		return "", fmt.Errorf("write skill: %w", err)
+		logger.WithError(err).Error("failed to write skill file")
+		return "", WrapError("write skill", err)
 	}
+	logger.WithField("skill_path", skillPath).Debug("wrote skill file")
 
 	// Stage and commit.
 	cmd = exec.Command("git", "-C", localPath, "add", skillPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git add: %s: %w", out, err)
+		logger.WithError(err).Error("git add failed")
+		return "", WrapErrorWithFields("git add", err, map[string]interface{}{
+			"output": string(out),
+		})
 	}
+	logger.Debug("staged changes")
+	
 	cmd = exec.Command("git", "-C", localPath, "commit", "-m", message)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git commit: %s: %w", out, err)
+		logger.WithError(err).Error("git commit failed")
+		return "", WrapErrorWithFields("git commit", err, map[string]interface{}{
+			"output": string(out),
+		})
 	}
+	logger.WithField("message", message).Debug("committed changes")
 
 	// Get commit SHA.
 	cmd = exec.Command("git", "-C", localPath, "rev-parse", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("rev-parse: %w", err)
+		logger.WithError(err).Error("failed to get commit SHA")
+		return "", WrapError("rev-parse", err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	commitSHA := strings.TrimSpace(string(out))
+	logger.WithField("commit_sha", commitSHA).Info("successfully created commit")
+	return commitSHA, nil
 }
 
 // push pushes a branch to origin.
 func push(localPath, branch string) error {
+	logger := GetLogger().WithFields(map[string]interface{}{
+		"local_path": localPath,
+		"branch": branch,
+		"operation": "push",
+	})
+	logger.Info("pushing branch to origin")
+	
 	cmd := exec.Command("git", "-C", localPath, "push", "-u", "origin", branch)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git push: %s: %w", out, err)
+		logger.WithError(err).Error("git push failed")
+		return WrapErrorWithFields("git push", err, map[string]interface{}{
+			"output": string(out),
+		})
 	}
+	
+	logger.Info("successfully pushed branch to origin")
 	return nil
 }
 
 // createPR creates a pull request using the gh CLI.
 func createPR(localPath, branch, title, body string) (string, error) {
+	logger := GetLogger().WithFields(map[string]interface{}{
+		"local_path": localPath,
+		"branch": branch,
+		"title": title,
+		"operation": "create_pr",
+	})
+	logger.Info("creating pull request")
+	
 	cmd := exec.Command("gh", "pr", "create",
 		"--title", title,
 		"--body", body,
@@ -184,7 +279,13 @@ func createPR(localPath, branch, title, body string) (string, error) {
 	cmd.Dir = localPath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("gh pr create: %s: %w", out, err)
+		logger.WithError(err).Error("failed to create pull request")
+		return "", WrapErrorWithFields("gh pr create", err, map[string]interface{}{
+			"output": string(out),
+		})
 	}
-	return strings.TrimSpace(string(out)), nil
+	
+	prURL := strings.TrimSpace(string(out))
+	logger.WithField("pr_url", prURL).Info("pull request created successfully")
+	return prURL, nil
 }

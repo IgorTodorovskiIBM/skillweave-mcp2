@@ -30,10 +30,11 @@ echo "Local MCP endpoint: http://localhost:${PORT}"
 echo "Press Ctrl-C to stop."
 echo ""
 
-ssh -N -f \
+ssh -N \
+    -o ExitOnForwardFailure=yes \
     -L "${PORT}:localhost:${PORT}" \
     -J "${JUMP_USER}@${JUMP_HOST}" \
-    "${ZOS_USER}@${ZOS_HOST}"
+    "${ZOS_USER}@${ZOS_HOST}" &
 
 TUNNEL_PID=$!
 trap "kill ${TUNNEL_PID} 2>/dev/null || true" EXIT INT TERM

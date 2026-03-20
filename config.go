@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,31 +70,68 @@ func configPath(cacheDir string) string {
 
 // LoadConfig reads the skill registry from disk.
 func LoadConfig(cacheDir string) (*SkillConfig, error) {
+	logger := GetLogger().WithFields(map[string]interface{}{
+		"cache_dir": cacheDir,
+		"operation": "load_config",
+	})
+	
 	path := configPath(cacheDir)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			logger.Debug("config file does not exist, returning empty config")
 			return &SkillConfig{}, nil
 		}
-		return nil, err
+		logger.WithError(err).Error("failed to read config file")
+		return nil, WrapError("read config", err)
 	}
+	
 	var cfg SkillConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		logger.WithError(err).Error("failed to parse config file")
+		return nil, WrapErrorWithFields("parse config", err, map[string]interface{}{
+			"path": path,
+		})
 	}
+	
+	logger.WithFields(map[string]interface{}{
+		"skill_count": len(cfg.Skills),
+		"ai_tool_count": len(cfg.AICommands),
+	}).Debug("config loaded successfully")
 	return &cfg, nil
 }
 
 // SaveConfig writes the skill registry to disk.
 func SaveConfig(cacheDir string, cfg *SkillConfig) error {
+	logger := GetLogger().WithFields(map[string]interface{}{
+		"cache_dir": cacheDir,
+		"operation": "save_config",
+		"skill_count": len(cfg.Skills),
+		"ai_tool_count": len(cfg.AICommands),
+	})
+	logger.Debug("saving config")
+	
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return err
+		logger.WithError(err).Error("failed to create cache directory")
+		return WrapError("mkdir cache dir", err)
 	}
+	
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return err
+		logger.WithError(err).Error("failed to marshal config")
+		return WrapError("marshal config", err)
 	}
-	return os.WriteFile(configPath(cacheDir), append(data, '\n'), 0o644)
+	
+	path := configPath(cacheDir)
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		logger.WithError(err).Error("failed to write config file")
+		return WrapErrorWithFields("write config", err, map[string]interface{}{
+			"path": path,
+		})
+	}
+	
+	logger.Info("config saved successfully")
+	return nil
 }
 
 // FindSkill looks up a registered skill by name.
@@ -151,6 +189,10 @@ var shorthandRe = regexp.MustCompile(`^([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)$`)
 //   - git@github.com:owner/repo.git (SSH URL, path will be empty)
 //   - owner/repo (shorthand, path will be empty)
 func ParseGitHubURL(rawURL string) (repoURL, skillPath string, err error) {
+	if repoURL, skillPath, ok := parseSkillURLWithKnownPrefixes(rawURL); ok {
+		return repoURL, skillPath, nil
+	}
+
 	// Try blob URL first (most specific).
 	if m := githubBlobRe.FindStringSubmatch(rawURL); m != nil {
 		return "git@github.com:" + m[1] + ".git", m[2], nil
@@ -176,7 +218,70 @@ func ParseGitHubURL(rawURL string) (repoURL, skillPath string, err error) {
 		return "git@github.com:" + m[1] + ".git", "", nil
 	}
 
+	if repoURL, ok := parseGitHubRepoOnly(rawURL); ok {
+		return repoURL, "", nil
+	}
+
 	return "", "", fmt.Errorf("unrecognized URL format: %s\nSupported formats:\n  https://github.com/owner/repo/blob/branch/path-to-SKILL.md\n  https://github.com/owner/repo\n  git@github.com:owner/repo.git\n  owner/repo", rawURL)
+}
+
+func parseSkillURLWithKnownPrefixes(rawURL string) (string, string, bool) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", "", false
+	}
+
+	var repo string
+	var tail string
+	switch u.Host {
+	case "github.com":
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) < 5 || parts[2] != "blob" {
+			return "", "", false
+		}
+		repo = "git@github.com:" + parts[0] + "/" + strings.TrimSuffix(parts[1], ".git") + ".git"
+		tail = strings.Join(parts[3:], "/")
+	case "raw.githubusercontent.com":
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) < 4 {
+			return "", "", false
+		}
+		repo = "git@github.com:" + parts[0] + "/" + strings.TrimSuffix(parts[1], ".git") + ".git"
+		tail = strings.Join(parts[2:], "/")
+	default:
+		return "", "", false
+	}
+
+	for _, marker := range []string{".codex/skills/", "skills/"} {
+		if idx := strings.Index(tail, marker); idx >= 0 {
+			return repo, tail[idx:], true
+		}
+	}
+	return "", "", false
+}
+
+func parseGitHubRepoOnly(rawURL string) (string, bool) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", false
+	}
+
+	switch u.Host {
+	case "github.com":
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) < 2 {
+			return "", false
+		}
+		return "git@github.com:" + parts[0] + "/" + strings.TrimSuffix(parts[1], ".git") + ".git", true
+	case "raw.githubusercontent.com":
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) < 2 {
+			return "", false
+		}
+		return "git@github.com:" + parts[0] + "/" + strings.TrimSuffix(parts[1], ".git") + ".git", true
+	default:
+		return "", false
+	}
 }
 
 // DeriveSkillName guesses a short name from the skill path.

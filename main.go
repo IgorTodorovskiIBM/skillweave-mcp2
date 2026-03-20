@@ -84,7 +84,30 @@ func main() {
 	httpAddr := flag.String("http", "", "HTTP listen address (e.g. :8080). If empty, run in stdio mode.")
 	logTransport := flag.Bool("log-transport", false, "Log transport frames to stderr")
 	cacheDir := flag.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
+	logJSON := flag.Bool("log-json", false, "Output logs in JSON format")
 	flag.Parse()
+
+	// Initialize logger
+	level := LevelInfo
+	switch strings.ToLower(*logLevel) {
+	case "debug":
+		level = LevelDebug
+	case "info":
+		level = LevelInfo
+	case "warn":
+		level = LevelWarn
+	case "error":
+		level = LevelError
+	default:
+		fmt.Fprintf(os.Stderr, "Invalid log level %q, using info\n", *logLevel)
+	}
+	InitLogger(level, *logJSON)
+	logger := GetLogger()
+	logger.WithFields(map[string]interface{}{
+		"version":   "0.3.0",
+		"cache_dir": *cacheDir,
+	}).Info("skillweave starting")
 
 	if *cacheDir == "" {
 		*cacheDir = defaultCacheDir()

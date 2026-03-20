@@ -71,6 +71,26 @@ func (m *SessionManager) Get(id string) (*Session, error) {
 	return s, nil
 }
 
+// FindBySkillName returns the most recent session for a skill.
+func (m *SessionManager) FindBySkillName(skillName string) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var latest *Session
+	for _, s := range m.sessions {
+		if s.SkillName != skillName {
+			continue
+		}
+		if latest == nil || s.StartedAt.After(latest.StartedAt) {
+			latest = s
+		}
+	}
+	if latest == nil {
+		return nil, fmt.Errorf("session not found for skill: %s", skillName)
+	}
+	return latest, nil
+}
+
 // Remove deletes a session.
 func (m *SessionManager) Remove(id string) {
 	m.mu.Lock()

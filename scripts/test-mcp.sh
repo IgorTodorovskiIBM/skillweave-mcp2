@@ -1,6 +1,6 @@
 #!/bin/bash
-# Test the MCP server via stdio on z/OS
-# Sends initialize + initialized + skill_list, captures all output
+# Smoke test the MCP server via stdio.
+# Sends initialize + initialized + tools/list, then optionally calls one tool.
 
 cd ~/skillweave
 
@@ -9,8 +9,11 @@ cd ~/skillweave
   sleep 1
   echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
   sleep 1
-  echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"skill_list","arguments":{}}}'
+  echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
   sleep 1
-  echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"skill_boot","arguments":{"name":"zos-porting-cli"}}}'
-  sleep 5
+  if [[ -n "${TOOL_NAME:-}" ]]; then
+    echo "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"${TOOL_NAME}\",\"arguments\":{}}}"
+    sleep 2
+  fi
+  sleep 3
 } | ./skillweave 2>&1

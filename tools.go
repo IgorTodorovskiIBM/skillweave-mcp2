@@ -85,6 +85,8 @@ func sessionLearningEntryIDs(cacheDir string, session *Session) ([]string, error
 
 // registerTools registers all MCP tools on the server.
 func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, cacheDir string) {
+	logger := GetLogger()
+	logger.WithField("skill_count", len(cfg.Skills)).Info("registering MCP tools")
 
 	// --- Dynamic skill tools (one per registered skill) ---
 	for _, s := range cfg.Skills {
@@ -124,9 +126,17 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 			Name:        toolName,
 			Description: desc,
 		}, func(ctx context.Context, req *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, map[string]any, error) {
+			toolLogger := logger.WithFields(map[string]interface{}{
+				"tool": toolName,
+				"skill_name": s.Name,
+				"operation": "load_skill",
+			})
+			toolLogger.Info("skill tool invoked")
+			
 			// Fetch latest on each call.
 			localPath, err := ensureRepo(s.RepoURL, cacheDir)
 			if err != nil {
+				toolLogger.WithError(err).Error("failed to fetch repository")
 				return textResult("Error fetching repo: " + err.Error()), map[string]any{}, nil
 			}
 
@@ -145,6 +155,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 			}
 
 			session := sessions.Create(s.Name, s.RepoURL, s.SkillPath, localPath, localFilePath, string(content))
+			toolLogger.WithField("session_id", session.ID).Info("created new session for skill")
 
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("session_id: %s\n", session.ID))
@@ -163,22 +174,37 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		Name:        "skill_update",
 		Description: "Save an updated SKILL.md locally. Call this when the user has corrected you multiple times, you discovered a new pattern or fix, the user asks you to update the skill, or the session is ending with meaningful learnings. Pass your learnings as a list and the full updated SKILL.md content.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillUpdateParams) (*mcp.CallToolResult, map[string]any, error) {
+		toolLogger := logger.WithFields(map[string]interface{}{
+			"tool": "skill_update",
+			"session_id": in.SessionID,
+			"skill_name": in.SkillName,
+			"learning_count": len(in.Learnings),
+		})
+		toolLogger.Info("skill_update tool invoked")
+		
 		session, err := resolveSession(sessions, cfg, cacheDir, in.SessionID, in.SkillName)
 		if err != nil {
+			toolLogger.WithError(err).Error("failed to resolve session")
 			return textResult("Error: " + err.Error()), map[string]any{}, nil
 		}
+		toolLogger = toolLogger.WithField("resolved_skill", session.SkillName)
 		if err := validateMergedContent(session.OrigContent, in.UpdatedContent); err != nil {
+			toolLogger.WithError(err).Warn("content validation failed")
 			return textResult("Error: invalid updated content: " + err.Error()), map[string]any{}, nil
 		}
+		toolLogger.Debug("content validation passed")
 
 		// Always write to the cache repo.
 		cachePath := filepath.Join(session.LocalRepoPath, session.SkillPath)
 		if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+			toolLogger.WithError(err).Error("failed to create cache directory")
 			return textResult("Error creating directory: " + err.Error()), map[string]any{}, nil
 		}
 		if err := os.WriteFile(cachePath, []byte(in.UpdatedContent), 0o644); err != nil {
+			toolLogger.WithError(err).Error("failed to write to cache")
 			return textResult("Error writing to cache: " + err.Error()), map[string]any{}, nil
 		}
+		toolLogger.WithField("cache_path", cachePath).Debug("wrote skill to cache")
 
 		// Also write to local checkout if registered.
 		var localMsg string
@@ -206,6 +232,10 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		}
 
 		session.Saved = true
+		toolLogger.WithFields(map[string]interface{}{
+			"session_id": session.ID,
+			"learning_count": len(in.Learnings),
+		}).Info("skill updated successfully")
 
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("Skill %q updated locally.", session.SkillName))
@@ -221,12 +251,23 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		Name:        "skill_push",
 		Description: "Push the updated SKILL.md to GitHub as a PR. Call skill_update first to save locally, then call this when the user wants to share the changes with the team.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillPushParams) (*mcp.CallToolResult, map[string]any, error) {
+		toolLogger := logger.WithFields(map[string]interface{}{
+			"tool": "skill_push",
+			"session_id": in.SessionID,
+			"skill_name": in.SkillName,
+			"skip_pr": in.SkipPR,
+		})
+		toolLogger.Info("skill_push tool invoked")
+		
 		session, err := resolveSession(sessions, cfg, cacheDir, in.SessionID, in.SkillName)
 		if err != nil {
+			toolLogger.WithError(err).Error("failed to resolve session")
 			return textResult("Error: " + err.Error()), map[string]any{}, nil
 		}
+		toolLogger = toolLogger.WithField("resolved_skill", session.SkillName)
 
 		if !session.Saved {
+			toolLogger.Warn("attempted to push without saving first")
 			return textResult("Error: nothing to push. Call skill_update first to save changes. Use the CLI 'skillweave push' to merge and push ledgered learnings from previous sessions."), map[string]any{}, nil
 		}
 
@@ -256,12 +297,19 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 
 		commitSHA, err := createBranchAndCommit(session.LocalRepoPath, session.SkillPath, string(content), in.CommitMessage, branch)
 		if err != nil {
+			toolLogger.WithError(err).Error("failed to create branch and commit")
 			return textResult("Error committing: " + err.Error()), map[string]any{}, nil
 		}
+		toolLogger.WithFields(map[string]interface{}{
+			"commit_sha": commitSHA,
+			"branch": branch,
+		}).Info("created commit")
 
 		if err := push(session.LocalRepoPath, branch); err != nil {
+			toolLogger.WithError(err).Error("failed to push branch")
 			return textResult("Error pushing: " + err.Error()), map[string]any{}, nil
 		}
+		toolLogger.Info("pushed branch successfully")
 
 		mergedEntryIDs, err := sessionLearningEntryIDs(cacheDir, session)
 		if err != nil {
@@ -304,10 +352,13 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		}
 
 		sessions.Remove(session.ID)
+		toolLogger.WithField("session_id", session.ID).Info("removed session after successful push")
 
 		if prURL != "" {
+			toolLogger.WithField("pr_url", prURL).Info("skill push completed with PR")
 			return textResult(fmt.Sprintf("PR created: %s\nCommit: %s", prURL, commitSHA)), map[string]any{}, nil
 		}
+		toolLogger.Info("skill push completed without PR")
 		return textResult(fmt.Sprintf("Pushed to branch: %s\nCommit: %s%s", branch, commitSHA, prWarning)), map[string]any{}, nil
 	})
 }

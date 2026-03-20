@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -70,6 +71,9 @@ func main() {
 			return
 		case "status":
 			cmdStatus(os.Args[2:])
+			return
+		case "gc", "clean":
+			cmdGC(os.Args[2:])
 			return
 		case "help", "--help", "-h":
 			printHelp()
@@ -140,87 +144,18 @@ func main() {
 // --- CLI subcommands ---
 
 func cmdRegister(args []string) {
-	fs := flag.NewFlagSet("register", flag.ExitOnError)
-	name := fs.String("name", "", "Skill name (auto-derived from path if omitted)")
-	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
-	repoURL := fs.String("repo", "", "Git repo URL (if not using a GitHub blob URL)")
-	skillPath := fs.String("path", "", "Path to SKILL.md in repo (if not using a GitHub blob URL)")
-	localPath := fs.String("local-path", "", "Local checkout root (e.g. /Users/igor/Projects/zos-porting). skill_update will write here too.")
-	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: skillweave register [flags] <github-url>\n\n")
-		fmt.Fprintf(os.Stderr, "Register a SKILL.md for automatic tracking.\n\n")
-		fmt.Fprintf(os.Stderr, "Examples:\n")
-		fmt.Fprintf(os.Stderr, "  skillweave register https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md\n")
-		fmt.Fprintf(os.Stderr, "  skillweave register --local-path ~/Projects/zos-porting https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md\n")
-		fmt.Fprintf(os.Stderr, "  skillweave register --repo git@github.com:user/repo.git --path skills/my-skill/SKILL.md\n\n")
-		fs.PrintDefaults()
-	}
-	fs.Parse(args)
-
-	if *cacheDir == "" {
-		*cacheDir = defaultCacheDir()
-	}
-
-	rURL, sPath := *repoURL, *skillPath
-	if rURL == "" || sPath == "" {
-		if fs.NArg() < 1 {
-			fs.Usage()
-			os.Exit(1)
-		}
-		parsed, parsedPath, err := ParseGitHubURL(fs.Arg(0))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		if rURL == "" {
-			rURL = parsed
-		}
-		if sPath == "" {
-			sPath = parsedPath
-		}
-	}
-
-	if *localPath == "" {
-		*localPath = DetectLocalPath(rURL)
-	}
-
-	skillName := *name
-	if skillName == "" {
-		skillName = DeriveSkillName(sPath)
-	}
-
-	cfg, err := LoadConfig(*cacheDir)
-	if err != nil {
-		log.Fatalf("load config: %v", err)
-	}
-
-	skill := RegisteredSkill{
-		Name:      skillName,
-		RepoURL:   rURL,
-		SkillPath: sPath,
-		LocalPath: *localPath,
-	}
-	cfg.AddSkill(skill)
-
-	if err := SaveConfig(*cacheDir, cfg); err != nil {
-		log.Fatalf("save config: %v", err)
-	}
-
-	fmt.Printf("Registered skill %q\n", skillName)
-	fmt.Printf("  repo:  %s\n", rURL)
-	fmt.Printf("  path:  %s\n", sPath)
-	if *localPath != "" {
-		fmt.Printf("  local: %s\n", filepath.Join(*localPath, sPath))
-	}
-	fmt.Println()
-	printMCPConfig()
+	fmt.Fprintln(os.Stderr, "Note: 'skillweave register' is deprecated. Use 'skillweave setup' instead.")
+	fmt.Fprintln(os.Stderr, "      setup does everything register does, plus validates the repo and prints MCP config.")
+	fmt.Fprintln(os.Stderr)
+	cmdSetup(args)
 }
 
 func cmdUnregister(args []string) {
 	fs := flag.NewFlagSet("unregister", flag.ExitOnError)
 	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	yes := fs.Bool("yes", false, "Skip confirmation prompt")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: skillweave unregister <name>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: skillweave unregister [flags] <name>\n\n")
 		fmt.Fprintf(os.Stderr, "Remove a registered skill.\n\n")
 		fs.PrintDefaults()
 	}
@@ -241,10 +176,19 @@ func cmdUnregister(args []string) {
 	}
 
 	name := fs.Arg(0)
-	if !cfg.RemoveSkill(name) {
+
+	// Check it exists before prompting.
+	if _, err := cfg.FindSkill(name); err != nil {
 		fmt.Fprintf(os.Stderr, "Skill %q not found\n", name)
 		os.Exit(1)
 	}
+
+	if !*yes && !confirmAction(fmt.Sprintf("Unregister skill %q?", name)) {
+		fmt.Println("Cancelled.")
+		return
+	}
+
+	cfg.RemoveSkill(name)
 
 	if err := SaveConfig(*cacheDir, cfg); err != nil {
 		log.Fatalf("save config: %v", err)
@@ -273,6 +217,7 @@ func cmdList(args []string) {
 func cmdLedger(args []string) {
 	fs := flag.NewFlagSet("ledger", flag.ExitOnError)
 	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	yes := fs.Bool("yes", false, "Skip confirmation prompt (for clear)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: skillweave ledger <action> <skill-name> [entry-id]\n\n")
 		fmt.Fprintf(os.Stderr, "Actions:\n")
@@ -328,6 +273,16 @@ func cmdLedger(args []string) {
 				fmt.Printf("    PR: %s\n", e.PRUrl)
 			}
 		}
+		// Contextual hint: suggest clear when there are many merged entries.
+		var merged int
+		for _, e := range entries {
+			if e.CommitSHA != "" {
+				merged++
+			}
+		}
+		if merged >= 5 {
+			fmt.Printf("\nHint: %d merged entries. Run 'skillweave ledger clear %s' to clean up.\n", merged, skillName)
+		}
 
 	case "delete":
 		if fs.NArg() < 3 {
@@ -341,6 +296,10 @@ func cmdLedger(args []string) {
 		fmt.Printf("Deleted ledger entry %s\n", entryID)
 
 	case "clear":
+		if !*yes && !confirmAction(fmt.Sprintf("Delete all ledger entries for %q?", skillName)) {
+			fmt.Println("Cancelled.")
+			return
+		}
 		count, err := ClearLedger(*cacheDir, skill.RepoURL, skill.SkillPath)
 		if err != nil {
 			log.Fatalf("clear ledger: %v", err)
@@ -364,12 +323,13 @@ Getting started:
   status      Show registered skills, AI tools, and unmerged learnings
 
 Commands:
-  register    Register a SKILL.md for tracking
+  register    Register a SKILL.md (deprecated, use setup)
   unregister  Remove a registered skill
   list        List registered skills
   push        Push skill updates to GitHub as a PR
   ledger      Manage ledger entries (list, delete, clear)
   ai          Configure AI tools for merging (add, list, remove, reorder)
+  gc          Clean up stale cache repos and old merged ledger entries
   help        Show this help
 
 Server mode (no command):
@@ -462,6 +422,9 @@ func cmdAI(args []string) {
 			}
 			fmt.Printf("  %s %s  →  %s%s\n", order, cmd.Name, cmd.Command, args)
 		}
+		if len(cfg.AICommands) > 1 {
+			fmt.Println("\nHint: use 'skillweave ai reorder <name1> <name2> ...' to change the try order.")
+		}
 
 	case "remove":
 		if fs.NArg() < 2 {
@@ -531,27 +494,46 @@ func cmdSetup(args []string) {
 	name := fs.String("name", "", "Skill name (auto-derived from path if omitted)")
 	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
 	localPath := fs.String("local-path", "", "Local checkout root (auto-detected if inside a matching repo)")
+	repoURL := fs.String("repo", "", "Git repo URL (if not using a GitHub blob URL)")
+	skillPath := fs.String("path", "", "Path to SKILL.md in repo (required if URL doesn't include a file path)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: skillweave setup [flags] <github-url>\n\n")
 		fmt.Fprintf(os.Stderr, "One-command setup: register a skill and print MCP client config.\n\n")
-		fmt.Fprintf(os.Stderr, "Examples:\n")
-		fmt.Fprintf(os.Stderr, "  skillweave setup https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md\n\n")
+		fmt.Fprintf(os.Stderr, "Accepts many URL formats:\n")
+		fmt.Fprintf(os.Stderr, "  skillweave setup https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md\n")
+		fmt.Fprintf(os.Stderr, "  skillweave setup https://github.com/user/repo --path skills/my-skill/SKILL.md\n")
+		fmt.Fprintf(os.Stderr, "  skillweave setup git@github.com:user/repo.git --path skills/my-skill/SKILL.md\n")
+		fmt.Fprintf(os.Stderr, "  skillweave setup user/repo --path skills/my-skill/SKILL.md\n")
+		fmt.Fprintf(os.Stderr, "  skillweave setup --repo git@github.com:user/repo.git --path skills/my-skill/SKILL.md\n\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
-
-	if fs.NArg() < 1 {
-		fs.Usage()
-		os.Exit(1)
-	}
 
 	if *cacheDir == "" {
 		*cacheDir = defaultCacheDir()
 	}
 
-	rURL, sPath, err := ParseGitHubURL(fs.Arg(0))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	rURL, sPath := *repoURL, *skillPath
+	if rURL == "" {
+		if fs.NArg() < 1 {
+			fs.Usage()
+			os.Exit(1)
+		}
+		parsed, parsedPath, err := ParseGitHubURL(fs.Arg(0))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		rURL = parsed
+		if sPath == "" {
+			sPath = parsedPath
+		}
+	}
+
+	if sPath == "" {
+		fmt.Fprintf(os.Stderr, "Error: could not determine the skill path from the URL.\n")
+		fmt.Fprintf(os.Stderr, "Use --path to specify it, e.g.:\n")
+		fmt.Fprintf(os.Stderr, "  skillweave setup %s --path skills/my-skill/SKILL.md\n", fs.Arg(0))
 		os.Exit(1)
 	}
 
@@ -592,6 +574,10 @@ func cmdSetup(args []string) {
 	fmt.Println("\nFetching skill from remote...")
 	if _, err := ensureRepo(rURL, *cacheDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not fetch repo: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  The skill was registered but will not be available until the repo is accessible.\n")
+		fmt.Fprintf(os.Stderr, "  Common fixes:\n")
+		fmt.Fprintf(os.Stderr, "    - Check SSH keys: ssh -T git@github.com\n")
+		fmt.Fprintf(os.Stderr, "    - For private repos: go env -w GOPRIVATE=github.com/...\n")
 	} else {
 		skillFile := filepath.Join(repoCacheDir(*cacheDir, rURL), sPath)
 		if raw, err := os.ReadFile(skillFile); err == nil {
@@ -706,6 +692,7 @@ func cmdPush(args []string) {
 	commitMsg := fs.String("m", "", "Commit message (auto-generated if omitted)")
 	skipPR := fs.Bool("no-pr", false, "Push branch only, don't create a PR")
 	aiName := fs.String("ai", "", "Use a specific AI tool by name (default: try all in order)")
+	dryRun := fs.Bool("dry-run", false, "Show what would change without committing or pushing")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: skillweave push [flags] <skill-name>\n\n")
 		fmt.Fprintf(os.Stderr, "Push skill updates to GitHub as a PR.\n")
@@ -856,6 +843,13 @@ func cmdPush(args []string) {
 		return
 	}
 
+	// Dry-run: show diff and exit without committing or pushing.
+	if *dryRun {
+		fmt.Print("\n--- Dry run: showing diff (no changes will be pushed) ---\n\n")
+		showDiff(string(currentContent), updatedContent, skill.SkillPath)
+		return
+	}
+
 	// Branch, commit, push.
 	branch := fmt.Sprintf("skill-update/%s/%s", skillName, time.Now().Format("20060102-150405"))
 
@@ -874,7 +868,14 @@ func cmdPush(args []string) {
 		body := buildPRBody(*commitMsg)
 		prURL, err := createPR(localRepoPath, branch, *commitMsg, body)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: PR creation failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "\n*** ACTION REQUIRED: PR creation failed ***\n")
+			fmt.Fprintf(os.Stderr, "Error: %v\n\n", err)
+			fmt.Fprintf(os.Stderr, "Your changes were pushed to branch: %s\n", branch)
+			fmt.Fprintf(os.Stderr, "Create the PR manually:\n")
+			fmt.Fprintf(os.Stderr, "  gh pr create --head %s --title %q\n\n", branch, *commitMsg)
+			fmt.Fprintf(os.Stderr, "Common fixes:\n")
+			fmt.Fprintf(os.Stderr, "  - Install gh: https://cli.github.com\n")
+			fmt.Fprintf(os.Stderr, "  - Authenticate: gh auth login\n")
 		} else {
 			fmt.Printf("PR created: %s\n", prURL)
 		}
@@ -958,4 +959,136 @@ func formatLearnings(learnings []string) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// confirmAction prompts the user for confirmation. Returns true if they accept.
+func confirmAction(prompt string) bool {
+	fmt.Fprintf(os.Stderr, "%s [y/N]: ", prompt)
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+	return line == "y" || line == "yes"
+}
+
+// showDiff prints a unified diff between original and updated content.
+func showDiff(original, updated, label string) {
+	origFile, err := os.CreateTemp("", "skill-orig-*.md")
+	if err != nil {
+		fmt.Println(updated)
+		return
+	}
+	newFile, err := os.CreateTemp("", "skill-new-*.md")
+	if err != nil {
+		os.Remove(origFile.Name())
+		fmt.Println(updated)
+		return
+	}
+	defer os.Remove(origFile.Name())
+	defer os.Remove(newFile.Name())
+
+	origFile.WriteString(original)
+	newFile.WriteString(updated)
+	origFile.Close()
+	newFile.Close()
+
+	cmd := exec.Command("diff", "-u",
+		"--label", "current/"+label, origFile.Name(),
+		"--label", "updated/"+label, newFile.Name(),
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Run() // exit code 1 = differences found, which is expected
+}
+
+func cmdGC(args []string) {
+	fs := flag.NewFlagSet("gc", flag.ExitOnError)
+	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	maxAge := fs.Int("days", 30, "Delete merged ledger entries older than this many days")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: skillweave gc [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "Clean up stale cache repos and old merged ledger entries.\n\n")
+		fmt.Fprintf(os.Stderr, "Removes:\n")
+		fmt.Fprintf(os.Stderr, "  - Cached repos for skills that are no longer registered\n")
+		fmt.Fprintf(os.Stderr, "  - Merged ledger entries older than --days (default 30)\n\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	if *cacheDir == "" {
+		*cacheDir = defaultCacheDir()
+	}
+
+	cfg, err := LoadConfig(*cacheDir)
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+
+	// Build set of active repo hashes.
+	activeRepos := make(map[string]bool)
+	for _, s := range cfg.Skills {
+		activeRepos[hashString(normalizeRepoURL(s.RepoURL))] = true
+	}
+
+	// Clean up stale repo caches.
+	reposDir := filepath.Join(*cacheDir, "repos")
+	var removedRepos int
+	if entries, err := os.ReadDir(reposDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			if !activeRepos[e.Name()] {
+				repoPath := filepath.Join(reposDir, e.Name())
+				if err := os.RemoveAll(repoPath); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not remove %s: %v\n", repoPath, err)
+				} else {
+					removedRepos++
+				}
+			}
+		}
+	}
+
+	// Clean up old merged ledger entries.
+	cutoff := time.Now().AddDate(0, 0, -*maxAge)
+	ledgerDir := filepath.Join(*cacheDir, "ledger")
+	var removedEntries int
+	filepath.WalkDir(ledgerDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		var e LedgerEntry
+		if err := json.Unmarshal(data, &e); err != nil {
+			return nil
+		}
+		// Only remove merged entries that are old enough.
+		if e.CommitSHA != "" && e.Timestamp.Before(cutoff) {
+			if err := os.Remove(path); err == nil {
+				removedEntries++
+			}
+		}
+		return nil
+	})
+
+	// Clean up empty ledger directories.
+	cleanEmptyDirs(ledgerDir)
+
+	fmt.Printf("Removed %d stale repo cache(s) and %d old merged ledger entry/entries.\n", removedRepos, removedEntries)
+}
+
+// cleanEmptyDirs removes empty directories under root (bottom-up).
+func cleanEmptyDirs(root string) {
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || !d.IsDir() || path == root {
+			return nil
+		}
+		entries, err := os.ReadDir(path)
+		if err == nil && len(entries) == 0 {
+			os.Remove(path)
+		}
+		return nil
+	})
 }

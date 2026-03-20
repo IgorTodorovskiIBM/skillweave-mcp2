@@ -20,8 +20,11 @@ export PATH="$PATH:$(go env GOPATH)/bin"
 ## Quick start
 
 ```bash
-# Register a skill and get your MCP config
+# Register a skill and get your MCP config (many URL formats work)
 skillweave setup https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md
+
+# Or with shorthand + explicit path
+skillweave setup user/repo --path skills/my-skill/SKILL.md
 
 # Paste the printed JSON into your MCP client config (.mcp.json)
 # Start a session — the skill appears as a tool
@@ -41,18 +44,19 @@ skillweave setup https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md
 |---------|-------------|
 | `setup <url>` | Register a skill and print MCP config |
 | `status` | Show skills, unmerged learnings, AI tools |
-| `register <url>` | Register a skill (with `--name`, `--local-path` options) |
 | `unregister <name>` | Remove a registered skill |
 | `list` | List registered skills |
-| `push <name>` | Push skill updates as a PR (`-m`, `--no-pr`, `--ai`) |
+| `push <name>` | Push skill updates as a PR (`-m`, `--no-pr`, `--ai`, `--dry-run`) |
 | `ai add\|list\|remove\|reorder` | Configure AI tools for merging learnings |
 | `ledger list\|delete\|clear` | Manage the update ledger |
+| `gc` | Clean up stale cache repos and old merged ledger entries |
 
 ### Pushing updates
 
 ```bash
-skillweave push zos-porting-cli                    # auto-generated commit message
-skillweave push -m "Add patch tips" zos-porting-cli # custom message
+skillweave push zos-porting-cli                      # auto-generated commit message
+skillweave push -m "Add patch tips" zos-porting-cli   # custom message
+skillweave push --dry-run zos-porting-cli              # preview diff without pushing
 ```
 
 If there are unmerged learnings, `push` uses a configured AI tool to merge them into the SKILL.md before committing. If no AI tools are configured, it tries `bob` and `claude` from PATH automatically.

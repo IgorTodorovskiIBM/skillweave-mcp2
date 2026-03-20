@@ -131,15 +131,52 @@ func (c *SkillConfig) RemoveSkill(name string) bool {
 // githubBlobRe matches: https://github.com/<owner>/<repo>/blob/<branch>/<path>
 var githubBlobRe = regexp.MustCompile(`^https://github\.com/([^/]+/[^/]+)/blob/[^/]+/(.+)$`)
 
-// ParseGitHubURL extracts repo URL and file path from a GitHub blob URL.
+// githubRawRe matches: https://raw.githubusercontent.com/<owner>/<repo>/<branch>/<path>
+var githubRawRe = regexp.MustCompile(`^https://raw\.githubusercontent\.com/([^/]+/[^/]+)/[^/]+/(.+)$`)
+
+// githubRepoRe matches: https://github.com/<owner>/<repo> (no path)
+var githubRepoRe = regexp.MustCompile(`^https://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$`)
+
+// sshRepoRe matches: git@github.com:<owner>/<repo>.git
+var sshRepoRe = regexp.MustCompile(`^git@github\.com:([^/]+/[^/]+?)(?:\.git)?$`)
+
+// shorthandRe matches: owner/repo
+var shorthandRe = regexp.MustCompile(`^([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)$`)
+
+// ParseGitHubURL extracts repo URL and file path from various GitHub URL formats.
+// Supported formats:
+//   - https://github.com/owner/repo/blob/branch/path (blob URL)
+//   - https://raw.githubusercontent.com/owner/repo/branch/path (raw URL)
+//   - https://github.com/owner/repo (repo URL, path will be empty)
+//   - git@github.com:owner/repo.git (SSH URL, path will be empty)
+//   - owner/repo (shorthand, path will be empty)
 func ParseGitHubURL(rawURL string) (repoURL, skillPath string, err error) {
-	m := githubBlobRe.FindStringSubmatch(rawURL)
-	if m == nil {
-		return "", "", fmt.Errorf("not a GitHub blob URL: %s\nExpected: https://github.com/<owner>/<repo>/blob/<branch>/<path-to-SKILL.md>", rawURL)
+	// Try blob URL first (most specific).
+	if m := githubBlobRe.FindStringSubmatch(rawURL); m != nil {
+		return "git@github.com:" + m[1] + ".git", m[2], nil
 	}
-	repoURL = "git@github.com:" + m[1] + ".git"
-	skillPath = m[2]
-	return repoURL, skillPath, nil
+
+	// Try raw.githubusercontent.com URL.
+	if m := githubRawRe.FindStringSubmatch(rawURL); m != nil {
+		return "git@github.com:" + m[1] + ".git", m[2], nil
+	}
+
+	// Try HTTPS repo URL (no file path).
+	if m := githubRepoRe.FindStringSubmatch(rawURL); m != nil {
+		return "git@github.com:" + m[1] + ".git", "", nil
+	}
+
+	// Try SSH repo URL.
+	if m := sshRepoRe.FindStringSubmatch(rawURL); m != nil {
+		return "git@github.com:" + m[1] + ".git", "", nil
+	}
+
+	// Try owner/repo shorthand.
+	if m := shorthandRe.FindStringSubmatch(rawURL); m != nil {
+		return "git@github.com:" + m[1] + ".git", "", nil
+	}
+
+	return "", "", fmt.Errorf("unrecognized URL format: %s\nSupported formats:\n  https://github.com/owner/repo/blob/branch/path-to-SKILL.md\n  https://github.com/owner/repo\n  git@github.com:owner/repo.git\n  owner/repo", rawURL)
 }
 
 // DeriveSkillName guesses a short name from the skill path.

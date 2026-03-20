@@ -194,17 +194,35 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 			return textResult("Error: " + err.Error()), map[string]any{}, nil
 		}
 
+		// Check if there's something to push: either skill_update was called this session,
+		// or there are unmerged ledger entries from previous sessions.
 		if !session.Saved {
-			return textResult("Error: call skill_update first to save changes locally before pushing."), map[string]any{}, nil
+			entries, _ := ReadLedger(cacheDir, session.RepoURL, session.SkillPath, 0)
+			hasUnmerged := false
+			for _, e := range entries {
+				if e.CommitSHA == "" && len(e.Learnings) > 0 {
+					hasUnmerged = true
+					break
+				}
+			}
+			if !hasUnmerged {
+				return textResult("Error: nothing to push. Call skill_update first to save changes, or use the CLI 'skillweave push' if there are unmerged learnings."), map[string]any{}, nil
+			}
 		}
 
 		createPRFlag := !in.SkipPR
 
-		// Read the locally saved content.
+		// Read the locally saved content before fetching (fetch will reset the working tree).
 		cachePath := filepath.Join(session.LocalRepoPath, session.SkillPath)
 		content, err := os.ReadFile(cachePath)
 		if err != nil {
 			return textResult("Error reading saved file: " + err.Error()), map[string]any{}, nil
+		}
+
+		// Fetch latest from remote to ensure we branch from the current upstream.
+		// This prevents overwriting changes pushed by others since the session started.
+		if _, err := ensureRepo(session.RepoURL, cacheDir); err != nil {
+			return textResult("Error fetching latest from remote: " + err.Error()), map[string]any{}, nil
 		}
 
 		branch := fmt.Sprintf("skill-update/%s/%s", session.SkillName, time.Now().Format("20060102-150405"))
@@ -223,7 +241,16 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 			body := buildPRBody(in.CommitMessage)
 			prURL, err = createPR(session.LocalRepoPath, branch, in.CommitMessage, body)
 			if err != nil {
-				return textResult(fmt.Sprintf("Pushed (commit %s) but PR creation failed: %s", commitSHA, err.Error())), map[string]any{}, nil
+				msg := fmt.Sprintf(
+					"Pushed to branch %q (commit %s) but PR creation failed: %s\n\n"+
+						"ACTION REQUIRED: Create the PR manually:\n"+
+						"  gh pr create --head %s --title %q\n\n"+
+						"Common fixes:\n"+
+						"  - Install gh: https://cli.github.com\n"+
+						"  - Authenticate: gh auth login",
+					branch, commitSHA, err.Error(), branch, in.CommitMessage,
+				)
+				return textResult(msg), map[string]any{}, nil
 			}
 		}
 

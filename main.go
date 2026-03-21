@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -48,7 +49,12 @@ WHEN TO CALL skill_update (full rewrite):
 - You want to reorganize the skill structure significantly
 Use skill_note for everything else.
 
-skill_note and skill_update write locally. Call skill_push only when the user asks to share changes with the team. Before pushing, if you have unmerged notes, incorporate them into the SKILL.md via skill_update. At the end of a session with accumulated notes, ask the user if they would like to push.`
+PUSHING CHANGES:
+Call skill_push when the user asks to share changes with the team. skill_push automatically merges any unmerged notes into the SKILL.md using a configured AI tool — you do not need to call skill_update first.
+
+OTHER TOOLS:
+- skill_read: Re-read the current SKILL.md without creating a new session (useful if you need to refresh your context).
+- skill_list_notes: See all unmerged notes for a skill.`
 
 func main() {
 	if len(os.Args) > 1 {
@@ -783,62 +789,19 @@ func cmdPush(args []string) {
 	if len(unmergedLearnings) > 0 {
 		fmt.Printf("Found %d unmerged learnings.\n", len(unmergedLearnings))
 
-		// Determine which AI tools to try.
-		var aiTools []AICommand
+		// If --ai is specified, override the config for this run.
+		mergeCfg := cfg
 		if *aiName != "" {
 			cmd, err := cfg.FindAICommand(*aiName)
 			if err != nil {
 				log.Fatalf("%v", err)
 			}
-			aiTools = []AICommand{*cmd}
-		} else {
-			aiTools = cfg.AICommands
+			mergeCfg = &SkillConfig{AICommands: []AICommand{*cmd}}
 		}
 
-		if len(aiTools) == 0 {
-			// Try common AI tools from PATH as fallback.
-			for _, fallback := range defaultAIFallbacks() {
-				if _, err := exec.LookPath(fallback.Command); err == nil {
-					fmt.Fprintf(os.Stderr, "No AI tools configured. Using %q from PATH.\n", fallback.Name)
-					fmt.Fprintf(os.Stderr, "Run 'skillweave ai add' to configure permanently.\n")
-					aiTools = []AICommand{fallback}
-					break
-				}
-			}
-			if len(aiTools) == 0 {
-				log.Fatalf("No AI tools configured and none found on PATH.\nRun 'skillweave ai add' first.\nExample: skillweave ai add bob bob --yolo --output-format text")
-			}
-		}
-
-		prompt := fmt.Sprintf(
-			"You are updating a SKILL.md file with new learnings.\n\n"+
-				"Here is the current SKILL.md:\n```\n%s\n```\n\n"+
-				"Here are the new learnings to incorporate:\n%s\n\n"+
-				"Output ONLY the full updated SKILL.md content with the learnings merged into the appropriate sections. "+
-				"Do not add commentary before or after. Do not wrap in code fences. Do not summarize changes. "+
-				"Just output the raw SKILL.md content, starting with --- and ending with the last line of the document.",
-			string(currentContent),
-			formatLearnings(unmergedLearnings),
-		)
-
-		var merged string
-		var mergeErr error
-		for _, ai := range aiTools {
-			fmt.Printf("Trying %q (%s)...\n", ai.Name, ai.Command)
-			merged, mergeErr = runAI(ai, prompt)
-			if mergeErr == nil {
-				break
-			}
-			fmt.Fprintf(os.Stderr, "  %s failed: %v\n", ai.Name, mergeErr)
-			if len(aiTools) > 1 {
-				fmt.Fprintf(os.Stderr, "  Trying next AI tool...\n")
-			}
-		}
-		if mergeErr != nil {
-			log.Fatalf("All AI tools failed. Last error: %v", mergeErr)
-		}
-		if err := validateMergedContent(string(currentContent), merged); err != nil {
-			log.Fatalf("invalid AI output: %v", err)
+		merged, err := mergeNotesWithAI(mergeCfg, string(currentContent), unmergedLearnings, os.Stdout)
+		if err != nil {
+			log.Fatalf("%v", err)
 		}
 		updatedContent = merged
 	} else {
@@ -933,8 +896,9 @@ func cmdPush(args []string) {
 	}
 }
 
-// runAI calls an AI tool with a prompt, streams output with a prefix, and returns the result.
-func runAI(ai AICommand, prompt string) (string, error) {
+// runAI calls an AI tool with a prompt, streams progress to w, and returns the result.
+// Pass os.Stdout for CLI usage or os.Stderr/io.Discard for MCP (where stdout is the transport).
+func runAI(ai AICommand, prompt string, w io.Writer) (string, error) {
 	args := append(ai.Args, prompt)
 	cmd := exec.Command(ai.Command, args...)
 	cmd.Stderr = os.Stderr
@@ -956,7 +920,7 @@ func runAI(ai AICommand, prompt string) (string, error) {
 		line := scanner.Text()
 		result.WriteString(line)
 		result.WriteString("\n")
-		fmt.Printf("%s %s\n", prefix, line)
+		fmt.Fprintf(w, "%s %s\n", prefix, line)
 	}
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("%s: read stdout: %w", ai.Name, err)
@@ -966,6 +930,53 @@ func runAI(ai AICommand, prompt string) (string, error) {
 		return "", fmt.Errorf("%s: %w", ai.Name, err)
 	}
 	return cleanAIOutput(result.String()), nil
+}
+
+// mergeNotesWithAI uses configured AI tools to merge learnings into the current SKILL.md content.
+// Returns the merged content or an error if all AI tools fail (or none are available).
+func mergeNotesWithAI(cfg *SkillConfig, currentContent string, learnings []string, w io.Writer) (string, error) {
+	aiTools := cfg.AICommands
+	if len(aiTools) == 0 {
+		for _, fallback := range defaultAIFallbacks() {
+			if _, err := exec.LookPath(fallback.Command); err == nil {
+				fmt.Fprintf(w, "No AI tools configured. Using %q from PATH.\n", fallback.Name)
+				aiTools = []AICommand{fallback}
+				break
+			}
+		}
+		if len(aiTools) == 0 {
+			return "", fmt.Errorf("no AI tools configured and none found on PATH")
+		}
+	}
+
+	prompt := fmt.Sprintf(
+		"You are updating a SKILL.md file with new learnings.\n\n"+
+			"Here is the current SKILL.md:\n```\n%s\n```\n\n"+
+			"Here are the new learnings to incorporate:\n%s\n\n"+
+			"Output ONLY the full updated SKILL.md content with the learnings merged into the appropriate sections. "+
+			"Do not add commentary before or after. Do not wrap in code fences. Do not summarize changes. "+
+			"Just output the raw SKILL.md content, starting with the first line of the document and ending with the last.",
+		currentContent,
+		formatLearnings(learnings),
+	)
+
+	var merged string
+	var mergeErr error
+	for _, ai := range aiTools {
+		fmt.Fprintf(w, "Trying %q (%s)...\n", ai.Name, ai.Command)
+		merged, mergeErr = runAI(ai, prompt, w)
+		if mergeErr == nil {
+			break
+		}
+		fmt.Fprintf(w, "  %s failed: %v\n", ai.Name, mergeErr)
+	}
+	if mergeErr != nil {
+		return "", fmt.Errorf("all AI tools failed, last error: %w", mergeErr)
+	}
+	if err := validateMergedContent(currentContent, merged); err != nil {
+		return "", fmt.Errorf("invalid AI output: %w", err)
+	}
+	return merged, nil
 }
 
 // cleanAIOutput strips bob's tool-use artifacts and trailing commentary.

@@ -73,22 +73,6 @@ func resolveSession(sessions *SessionManager, cfg *SkillConfig, cacheDir, sessio
 	return sessions.Create(skill.Name, skill.RepoURL, skill.SkillPath, localRepoPath, localFilePath, string(content)), nil
 }
 
-func sessionLearningEntryIDs(cacheDir string, session *Session) ([]string, error) {
-	entries, err := ReadLedger(cacheDir, session.RepoURL, session.SkillPath, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	var ids []string
-	for _, e := range entries {
-		if e.SessionID != session.ID || e.CommitSHA != "" || len(e.Learnings) == 0 {
-			continue
-		}
-		ids = append(ids, e.ID)
-	}
-	return ids, nil
-}
-
 // registerTools registers all MCP tools on the server.
 func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, cacheDir string) {
 	logger := GetLogger()
@@ -296,10 +280,80 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		return textResult(fmt.Sprintf("Noted. (%d note(s) this session for %q)", count, session.SkillName)), map[string]any{}, nil
 	})
 
+	// --- skill_read ---
+	type SkillReadParams struct {
+		SessionID string `json:"session_id,omitempty" jsonschema:"session ID returned when the skill was loaded (optional if skill_name is provided)"`
+		SkillName string `json:"skill_name,omitempty" jsonschema:"skill name as fallback when session_id is unavailable"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "skill_read",
+		Description: "Re-read the current SKILL.md content without creating a new session. Use this when you need to see the skill content again (e.g., before calling skill_update to incorporate notes).",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillReadParams) (*mcp.CallToolResult, map[string]any, error) {
+		toolLogger := logger.WithFields(map[string]interface{}{
+			"tool":       "skill_read",
+			"session_id": in.SessionID,
+			"skill_name": in.SkillName,
+		})
+		toolLogger.Info("skill_read tool invoked")
+
+		session, err := resolveSession(sessions, cfg, cacheDir, in.SessionID, in.SkillName)
+		if err != nil {
+			toolLogger.WithError(err).Error("failed to resolve session")
+			return textResult("Error: " + err.Error()), map[string]any{}, nil
+		}
+
+		content, err := os.ReadFile(filepath.Join(session.LocalRepoPath, session.SkillPath))
+		if err != nil {
+			return textResult("Error reading SKILL.md: " + err.Error()), map[string]any{}, nil
+		}
+
+		return textResult(string(content)), map[string]any{}, nil
+	})
+
+	// --- skill_list_notes ---
+	type SkillListNotesParams struct {
+		SessionID string `json:"session_id,omitempty" jsonschema:"session ID returned when the skill was loaded (optional if skill_name is provided)"`
+		SkillName string `json:"skill_name,omitempty" jsonschema:"skill name as fallback when session_id is unavailable"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "skill_list_notes",
+		Description: "List all unmerged notes for a skill. Use this to review what has been captured before pushing.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillListNotesParams) (*mcp.CallToolResult, map[string]any, error) {
+		toolLogger := logger.WithFields(map[string]interface{}{
+			"tool":       "skill_list_notes",
+			"session_id": in.SessionID,
+			"skill_name": in.SkillName,
+		})
+		toolLogger.Info("skill_list_notes tool invoked")
+
+		session, err := resolveSession(sessions, cfg, cacheDir, in.SessionID, in.SkillName)
+		if err != nil {
+			toolLogger.WithError(err).Error("failed to resolve session")
+			return textResult("Error: " + err.Error()), map[string]any{}, nil
+		}
+
+		entries, err := ReadLedger(cacheDir, session.RepoURL, session.SkillPath, 0)
+		if err != nil {
+			return textResult("Error reading ledger: " + err.Error()), map[string]any{}, nil
+		}
+		_, unmergedLearnings := collectUnmergedLearnings(entries)
+
+		if len(unmergedLearnings) == 0 {
+			return textResult("No unmerged notes."), map[string]any{}, nil
+		}
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("%d unmerged note(s) for %q:\n", len(unmergedLearnings), session.SkillName))
+		for _, l := range unmergedLearnings {
+			sb.WriteString("  - " + l + "\n")
+		}
+		return textResult(sb.String()), map[string]any{}, nil
+	})
+
 	// --- skill_push ---
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "skill_push",
-		Description: "Push the updated SKILL.md to GitHub as a PR. If you have been using skill_note, call skill_update first to incorporate the notes into the full SKILL.md, then call this to push.",
+		Description: "Push skill updates to GitHub as a PR. Handles everything: if there are unmerged notes, they are automatically merged into the SKILL.md by an AI tool before pushing. Just call this when the user wants to share changes.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillPushParams) (*mcp.CallToolResult, map[string]any, error) {
 		toolLogger := logger.WithFields(map[string]interface{}{
 			"tool": "skill_push",
@@ -308,7 +362,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 			"skip_pr": in.SkipPR,
 		})
 		toolLogger.Info("skill_push tool invoked")
-		
+
 		session, err := resolveSession(sessions, cfg, cacheDir, in.SessionID, in.SkillName)
 		if err != nil {
 			toolLogger.WithError(err).Error("failed to resolve session")
@@ -316,54 +370,71 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		}
 		toolLogger = toolLogger.WithField("resolved_skill", session.SkillName)
 
-		if !session.IsSaved() {
-			// Check if there are unmerged notes — guide the LLM to merge them first.
+		// Fetch latest from remote to ensure we branch from the current upstream.
+		cachePath := filepath.Join(session.LocalRepoPath, session.SkillPath)
+		var savedContent []byte
+		if session.IsSaved() {
+			// Read the locally saved content before fetching (fetch will reset the working tree).
+			savedContent, err = os.ReadFile(cachePath)
+			if err != nil {
+				return textResult("Error reading saved file: " + err.Error()), map[string]any{}, nil
+			}
+		}
+
+		if _, err := ensureRepo(session.RepoURL, cacheDir); err != nil {
+			return textResult("Error fetching latest from remote: " + err.Error()), map[string]any{}, nil
+		}
+		upstreamContent, err := os.ReadFile(cachePath)
+		if err != nil {
+			return textResult("Error reading upstream file: " + err.Error()), map[string]any{}, nil
+		}
+
+		// Determine the content to push.
+		var content string
+		if session.IsSaved() {
+			// skill_update was called — use that content.
+			content = string(savedContent)
+		} else {
+			// Check for unmerged notes and auto-merge with AI.
 			entries, err := ReadLedger(cacheDir, session.RepoURL, session.SkillPath, 0)
 			if err != nil {
 				toolLogger.WithError(err).Error("failed to read ledger")
 				return textResult("Error reading ledger: " + err.Error()), map[string]any{}, nil
 			}
 			_, unmergedLearnings := collectUnmergedLearnings(entries)
-			if len(unmergedLearnings) > 0 {
-				toolLogger.WithField("unmerged_count", len(unmergedLearnings)).Warn("notes exist but skill_update not called")
+			if len(unmergedLearnings) == 0 {
+				toolLogger.Warn("nothing to push")
+				return textResult("Nothing to push. No skill_update and no unmerged notes."), map[string]any{}, nil
+			}
+
+			toolLogger.WithField("unmerged_count", len(unmergedLearnings)).Info("auto-merging notes with AI")
+			merged, err := mergeNotesWithAI(cfg, string(upstreamContent), unmergedLearnings, os.Stderr)
+			if err != nil {
+				toolLogger.WithError(err).Error("AI merge failed")
+				// Fall back to asking the LLM to merge manually.
 				var sb strings.Builder
-				sb.WriteString(fmt.Sprintf("There are %d unmerged notes but no updated SKILL.md yet.\n", len(unmergedLearnings)))
-				sb.WriteString("Incorporate these notes into the skill and call skill_update first:\n")
+				sb.WriteString(fmt.Sprintf("Auto-merge failed: %s\n\n", err.Error()))
+				sb.WriteString("Please incorporate these notes into the skill manually via skill_update, then call skill_push again:\n")
 				for _, l := range unmergedLearnings {
 					sb.WriteString("  - " + l + "\n")
 				}
-				sb.WriteString("\nThen call skill_push again.")
 				return textResult(sb.String()), map[string]any{}, nil
 			}
-			toolLogger.Warn("attempted to push without saving first")
-			return textResult("Error: nothing to push. Call skill_update first to save changes. Use the CLI 'skillweave push' to merge and push ledgered learnings from previous sessions."), map[string]any{}, nil
+			content = merged
+
+			// Write merged content to cache so it persists.
+			if err := os.WriteFile(cachePath, []byte(content), 0o644); err != nil {
+				return textResult("Error writing merged content: " + err.Error()), map[string]any{}, nil
+			}
 		}
 
-		createPRFlag := !in.SkipPR
-
-		// Read the locally saved content before fetching (fetch will reset the working tree).
-		cachePath := filepath.Join(session.LocalRepoPath, session.SkillPath)
-		content, err := os.ReadFile(cachePath)
-		if err != nil {
-			return textResult("Error reading saved file: " + err.Error()), map[string]any{}, nil
-		}
-
-		// Fetch latest from remote to ensure we branch from the current upstream.
-		// This prevents overwriting changes pushed by others since the session started.
-		if _, err := ensureRepo(session.RepoURL, cacheDir); err != nil {
-			return textResult("Error fetching latest from remote: " + err.Error()), map[string]any{}, nil
-		}
-		latestContent, err := os.ReadFile(cachePath)
-		if err != nil {
-			return textResult("Error reading upstream file: " + err.Error()), map[string]any{}, nil
-		}
-		if string(content) == string(latestContent) {
-			return textResult("Nothing to push. The saved SKILL.md matches the latest upstream content."), map[string]any{}, nil
+		if content == string(upstreamContent) {
+			return textResult("Nothing to push. The SKILL.md already matches upstream."), map[string]any{}, nil
 		}
 
 		branch := fmt.Sprintf("skill-update/%s/%s", session.SkillName, time.Now().Format("20060102-150405"))
 
-		commitSHA, err := createBranchAndCommit(session.LocalRepoPath, session.SkillPath, string(content), in.CommitMessage, branch)
+		commitSHA, err := createBranchAndCommit(session.LocalRepoPath, session.SkillPath, content, in.CommitMessage, branch)
 		if err != nil {
 			toolLogger.WithError(err).Error("failed to create branch and commit")
 			return textResult("Error committing: " + err.Error()), map[string]any{}, nil
@@ -388,7 +459,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 
 		var prURL string
 		var prWarning string
-		if createPRFlag {
+		if !in.SkipPR {
 			body := buildPRBody(in.CommitMessage)
 			prURL, err = createPR(session.LocalRepoPath, branch, in.CommitMessage, body)
 			if err != nil {

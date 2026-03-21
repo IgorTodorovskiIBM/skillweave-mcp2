@@ -20,6 +20,12 @@ type SkillUpdateParams struct {
 	UpdatedContent string   `json:"updated_content" jsonschema:"full new SKILL.md content with learnings incorporated"`
 }
 
+type SkillNoteParams struct {
+	SessionID string `json:"session_id,omitempty" jsonschema:"session ID returned when the skill was loaded (optional if skill_name is provided)"`
+	SkillName string `json:"skill_name,omitempty" jsonschema:"skill name as fallback when session_id is unavailable"`
+	Note      string `json:"note" jsonschema:"one-line description of what was learned or corrected"`
+}
+
 type SkillPushParams struct {
 	SessionID     string `json:"session_id,omitempty" jsonschema:"session ID returned when the skill was loaded (optional if skill_name is provided)"`
 	SkillName     string `json:"skill_name,omitempty" jsonschema:"skill name as fallback when session_id is unavailable"`
@@ -228,10 +234,11 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 			Timestamp: time.Now(),
 		}
 		if err := WriteLedger(cacheDir, entry); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to write ledger: %v\n", err)
+			toolLogger.WithError(err).Error("failed to write ledger")
+			return textResult("Error saving learnings: " + err.Error()), map[string]any{}, nil
 		}
 
-		session.Saved = true
+		session.SetSaved(true)
 		toolLogger.WithFields(map[string]interface{}{
 			"session_id": session.ID,
 			"learning_count": len(in.Learnings),
@@ -246,10 +253,53 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		return textResult(sb.String()), map[string]any{}, nil
 	})
 
+	// --- skill_note ---
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "skill_note",
+		Description: "Quickly jot down a learning or correction. Much lighter than skill_update — just pass a one-line note. Notes are saved to the ledger and merged into SKILL.md at push time. Call this immediately when you get corrected or discover something new.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillNoteParams) (*mcp.CallToolResult, map[string]any, error) {
+		toolLogger := logger.WithFields(map[string]interface{}{
+			"tool":       "skill_note",
+			"session_id": in.SessionID,
+			"skill_name": in.SkillName,
+		})
+		toolLogger.Info("skill_note tool invoked")
+
+		if strings.TrimSpace(in.Note) == "" {
+			return textResult("Error: note cannot be empty"), map[string]any{}, nil
+		}
+
+		session, err := resolveSession(sessions, cfg, cacheDir, in.SessionID, in.SkillName)
+		if err != nil {
+			toolLogger.WithError(err).Error("failed to resolve session")
+			return textResult("Error: " + err.Error()), map[string]any{}, nil
+		}
+		toolLogger = toolLogger.WithField("resolved_skill", session.SkillName)
+
+		// Write directly to ledger as a single learning.
+		entry := LedgerEntry{
+			ID:        generateID(),
+			SessionID: session.ID,
+			RepoURL:   session.RepoURL,
+			SkillPath: session.SkillPath,
+			Learnings: []string{strings.TrimSpace(in.Note)},
+			Timestamp: time.Now(),
+		}
+		if err := WriteLedger(cacheDir, entry); err != nil {
+			toolLogger.WithError(err).Error("failed to write ledger")
+			return textResult("Error saving note: " + err.Error()), map[string]any{}, nil
+		}
+
+		count := session.IncrementNoteCount()
+		toolLogger.WithField("note_count", count).Info("note recorded")
+
+		return textResult(fmt.Sprintf("Noted. (%d note(s) this session for %q)", count, session.SkillName)), map[string]any{}, nil
+	})
+
 	// --- skill_push ---
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "skill_push",
-		Description: "Push the updated SKILL.md to GitHub as a PR. Call skill_update first to save locally, then call this when the user wants to share the changes with the team.",
+		Description: "Push the updated SKILL.md to GitHub as a PR. If you have been using skill_note, call skill_update first to incorporate the notes into the full SKILL.md, then call this to push.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillPushParams) (*mcp.CallToolResult, map[string]any, error) {
 		toolLogger := logger.WithFields(map[string]interface{}{
 			"tool": "skill_push",
@@ -266,7 +316,25 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		}
 		toolLogger = toolLogger.WithField("resolved_skill", session.SkillName)
 
-		if !session.Saved {
+		if !session.IsSaved() {
+			// Check if there are unmerged notes — guide the LLM to merge them first.
+			entries, err := ReadLedger(cacheDir, session.RepoURL, session.SkillPath, 0)
+			if err != nil {
+				toolLogger.WithError(err).Error("failed to read ledger")
+				return textResult("Error reading ledger: " + err.Error()), map[string]any{}, nil
+			}
+			_, unmergedLearnings := collectUnmergedLearnings(entries)
+			if len(unmergedLearnings) > 0 {
+				toolLogger.WithField("unmerged_count", len(unmergedLearnings)).Warn("notes exist but skill_update not called")
+				var sb strings.Builder
+				sb.WriteString(fmt.Sprintf("There are %d unmerged notes but no updated SKILL.md yet.\n", len(unmergedLearnings)))
+				sb.WriteString("Incorporate these notes into the skill and call skill_update first:\n")
+				for _, l := range unmergedLearnings {
+					sb.WriteString("  - " + l + "\n")
+				}
+				sb.WriteString("\nThen call skill_push again.")
+				return textResult(sb.String()), map[string]any{}, nil
+			}
 			toolLogger.Warn("attempted to push without saving first")
 			return textResult("Error: nothing to push. Call skill_update first to save changes. Use the CLI 'skillweave push' to merge and push ledgered learnings from previous sessions."), map[string]any{}, nil
 		}
@@ -311,10 +379,12 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		}
 		toolLogger.Info("pushed branch successfully")
 
-		mergedEntryIDs, err := sessionLearningEntryIDs(cacheDir, session)
+		// Collect ALL unmerged learnings (across sessions) so cross-session notes get marked merged too.
+		allEntries, err := ReadLedger(cacheDir, session.RepoURL, session.SkillPath, 0)
 		if err != nil {
 			return textResult("Error reading ledger: " + err.Error()), map[string]any{}, nil
 		}
+		mergedEntryIDs, _ := collectUnmergedLearnings(allEntries)
 
 		var prURL string
 		var prWarning string

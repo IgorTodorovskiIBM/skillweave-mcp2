@@ -177,10 +177,10 @@ func MarkLedgerEntriesMerged(cacheDir, repoURL, skillPath string, entryIDs []str
 		e.CommitSHA = commitSHA
 		updated, err := json.MarshalIndent(e, "", "  ")
 		if err != nil {
-			return nil
+			return fmt.Errorf("marshal ledger entry %s: %w", e.ID, err)
 		}
 		if err := os.WriteFile(path, updated, 0o644); err != nil {
-			return nil
+			return fmt.Errorf("write ledger entry %s: %w", e.ID, err)
 		}
 		delete(remaining, e.ID)
 		if len(remaining) == 0 {

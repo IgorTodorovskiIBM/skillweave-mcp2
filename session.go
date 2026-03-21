@@ -10,15 +10,39 @@ import (
 
 // Session tracks the state of an active skill-update session.
 type Session struct {
-	ID            string    `json:"id"`
-	SkillName     string    `json:"skill_name"`
-	RepoURL       string    `json:"repo_url"`
-	SkillPath     string    `json:"skill_path"`
-	LocalRepoPath string    `json:"local_repo_path"` // Cache clone path
-	LocalFilePath string    `json:"local_file_path"` // Direct local checkout path (optional)
-	OrigContent   string    `json:"orig_content"`    // Content at boot time
-	StartedAt     time.Time `json:"started_at"`
-	Saved         bool      `json:"saved"` // Whether skill_update has been called
+	mu            sync.Mutex `json:"-"`
+	ID            string     `json:"id"`
+	SkillName     string     `json:"skill_name"`
+	RepoURL       string     `json:"repo_url"`
+	SkillPath     string     `json:"skill_path"`
+	LocalRepoPath string     `json:"local_repo_path"` // Cache clone path
+	LocalFilePath string     `json:"local_file_path"` // Direct local checkout path (optional)
+	OrigContent   string     `json:"orig_content"`    // Content at boot time
+	StartedAt     time.Time  `json:"started_at"`
+	Saved         bool       `json:"saved"`      // Whether skill_update has been called
+	NoteCount     int        `json:"note_count"`  // Number of skill_note calls this session
+}
+
+// SetSaved marks the session as having been saved via skill_update.
+func (s *Session) SetSaved(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Saved = v
+}
+
+// IsSaved returns whether skill_update has been called.
+func (s *Session) IsSaved() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Saved
+}
+
+// IncrementNoteCount atomically increments and returns the new note count.
+func (s *Session) IncrementNoteCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.NoteCount++
+	return s.NoteCount
 }
 
 // SessionManager provides thread-safe session management.

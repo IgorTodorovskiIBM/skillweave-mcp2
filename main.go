@@ -33,17 +33,22 @@ func defaultCacheDir() string {
 const serverInstructions = `Skill Updater MCP server. Each registered skill appears as its own tool (skill_<name>). Read the relevant skill before starting work.
 
 DURING THE SESSION:
-Pay attention to when the user corrects you or you discover something new. These are learnings that should be captured in the skill.
+Pay attention to when the user corrects you or you discover something new.
 
-WHEN TO CALL skill_update:
-- You have been corrected multiple times on the same topic
-- You discovered a new pattern, fix, or tip that would help future sessions
-- The user explicitly asks you to update the skill
-- The session is ending and you accumulated meaningful learnings
+WHEN YOU GET CORRECTED OR LEARN SOMETHING NEW:
+Call skill_note immediately with a one-line description. Do not wait. Do not batch. Examples:
+  skill_note({ note: "always use %w not %v for error wrapping in this codebase" })
+  skill_note({ note: "the build requires GOOS=linux even on mac — cross-compile only" })
+  skill_note({ note: "prefer table-driven tests over individual test functions here" })
 
-Generate the full updated SKILL.md content yourself — you have the original from the skill tool and you know what you learned. Pass both the learnings list and the updated content to skill_update.
+skill_note is lightweight — just a sentence. Use it every time you are corrected, discover a gotcha, or learn a pattern that would help future sessions. Err on the side of noting too much rather than too little.
 
-skill_update writes locally. Call skill_push only when the user asks to share changes with the team.`
+WHEN TO CALL skill_update (full rewrite):
+- The user explicitly asks you to update or rewrite the skill document
+- You want to reorganize the skill structure significantly
+Use skill_note for everything else.
+
+skill_note and skill_update write locally. Call skill_push only when the user asks to share changes with the team. Before pushing, if you have unmerged notes, incorporate them into the SKILL.md via skill_update. At the end of a session with accumulated notes, ask the user if they would like to push.`
 
 func main() {
 	if len(os.Args) > 1 {

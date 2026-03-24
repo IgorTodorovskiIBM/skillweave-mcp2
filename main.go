@@ -21,14 +21,14 @@ import (
 )
 
 func defaultCacheDir() string {
-	if dir := os.Getenv("SKILLWEAVE_DIR"); dir != "" {
+	if dir := os.Getenv("LEARNWEAVE_DIR"); dir != "" {
 		return dir
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatalf("cannot determine home dir: %v", err)
 	}
-	return filepath.Join(home, ".skillweave")
+	return filepath.Join(home, ".learnweave")
 }
 
 const serverInstructions = `Skill Updater MCP server. Each registered skill appears as its own tool (skill_<name>). Read the relevant skill before starting work.
@@ -94,7 +94,7 @@ func main() {
 
 	httpAddr := flag.String("http", "", "HTTP listen address (e.g. :8080). If empty, run in stdio mode.")
 	logTransport := flag.Bool("log-transport", false, "Log transport frames to stderr")
-	cacheDir := flag.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	cacheDir := flag.String("cache-dir", "", "Cache directory (default ~/.learnweave)")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	logJSON := flag.Bool("log-json", false, "Output logs in JSON format")
 	flag.Parse()
@@ -118,7 +118,7 @@ func main() {
 	logger.WithFields(map[string]interface{}{
 		"version":   "0.1.0",
 		"cache_dir": *cacheDir,
-	}).Info("skillweave starting")
+	}).Info("learnweave starting")
 
 	if *cacheDir == "" {
 		*cacheDir = defaultCacheDir()
@@ -130,7 +130,7 @@ func main() {
 	}
 
 	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "skillweave",
+		Name:    "learnweave",
 		Version: "0.1.0",
 	}, &mcp.ServerOptions{
 		Instructions: serverInstructions,
@@ -155,7 +155,7 @@ func main() {
 		sseHandler := mcp.NewSSEHandler(func(*http.Request) *mcp.Server { return srv }, nil)
 		http.Handle("/mcp", handler)
 		http.Handle("/sse", sseHandler)
-		log.Printf("skillweave listening on %s", *httpAddr)
+		log.Printf("learnweave listening on %s", *httpAddr)
 		if err := http.ListenAndServe(*httpAddr, nil); err != nil {
 			log.Fatalf("http server: %v", err)
 		}
@@ -178,7 +178,7 @@ func main() {
 // --- CLI subcommands ---
 
 func cmdRegister(args []string) {
-	fmt.Fprintln(os.Stderr, "Note: 'skillweave register' is deprecated. Use 'skillweave setup' instead.")
+	fmt.Fprintln(os.Stderr, "Note: 'learnweave register' is deprecated. Use 'learnweave setup' instead.")
 	fmt.Fprintln(os.Stderr, "      setup does everything register does, plus validates the repo and prints MCP config.")
 	fmt.Fprintln(os.Stderr)
 	cmdSetup(args)
@@ -186,10 +186,10 @@ func cmdRegister(args []string) {
 
 func cmdUnregister(args []string) {
 	fs := flag.NewFlagSet("unregister", flag.ExitOnError)
-	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.learnweave)")
 	yes := fs.Bool("yes", false, "Skip confirmation prompt")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: skillweave unregister [flags] <name>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: learnweave unregister [flags] <name>\n\n")
 		fmt.Fprintf(os.Stderr, "Remove a registered skill.\n\n")
 		fs.PrintDefaults()
 	}
@@ -233,7 +233,7 @@ func cmdUnregister(args []string) {
 
 func cmdList(args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.learnweave)")
 	fs.Parse(args)
 
 	if *cacheDir == "" {
@@ -250,11 +250,11 @@ func cmdList(args []string) {
 
 func cmdLedger(args []string) {
 	fs := flag.NewFlagSet("ledger", flag.ExitOnError)
-	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.learnweave)")
 	all := fs.Bool("all", false, "Show all entries including merged (for list)")
 	yes := fs.Bool("yes", false, "Skip confirmation prompt (for clear)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: skillweave ledger <action> <skill-name> [entry-id]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: learnweave ledger <action> <skill-name> [entry-id]\n\n")
 		fmt.Fprintf(os.Stderr, "Actions:\n")
 		fmt.Fprintf(os.Stderr, "  list   <skill-name>             List ledger entries\n")
 		fmt.Fprintf(os.Stderr, "  review <skill-name>             Walk through unmerged notes (keep/discard)\n")
@@ -285,7 +285,7 @@ func cmdLedger(args []string) {
 			fmt.Fprintln(os.Stderr, "No skills registered. Use 'skillweave setup <github-url>' to add one.")
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "Usage: skillweave ledger <action> <skill-name> [entry-id]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: learnweave ledger <action> <skill-name> [entry-id]\n\n")
 		fmt.Fprintf(os.Stderr, "Available skills:\n")
 		for _, s := range cfg.Skills {
 			entries, _ := ReadLedger(*cacheDir, s.RepoURL, s.SkillPath, 0)
@@ -360,7 +360,7 @@ func cmdLedger(args []string) {
 
 	case "delete":
 		if fs.NArg() < 3 {
-			fmt.Fprintf(os.Stderr, "Usage: skillweave ledger delete <skill-name> <entry-id>\n")
+			fmt.Fprintf(os.Stderr, "Usage: learnweave ledger delete <skill-name> <entry-id>\n")
 			os.Exit(1)
 		}
 		entryID := fs.Arg(2)
@@ -435,7 +435,7 @@ func cmdLedger(args []string) {
 func printHelp() {
 	fmt.Fprintf(os.Stderr, `skillweave - MCP server that keeps SKILL.md files up to date
 
-Usage: skillweave <command> [args]
+Usage: learnweave <command> [args]
 
 Getting started:
   setup       One-command setup: register a skill and print MCP config
@@ -468,20 +468,20 @@ Run 'skillweave <command> --help' for details on each command.
 
 func cmdAI(args []string) {
 	fs := flag.NewFlagSet("ai", flag.ExitOnError)
-	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.learnweave)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: skillweave ai <action> [args]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: learnweave ai <action> [args]\n\n")
 		fmt.Fprintf(os.Stderr, "Actions:\n")
 		fmt.Fprintf(os.Stderr, "  add     <name> <command> [args...]  Add an AI tool\n")
 		fmt.Fprintf(os.Stderr, "  list                                List configured AI tools\n")
 		fmt.Fprintf(os.Stderr, "  remove  <name>                      Remove an AI tool\n")
 		fmt.Fprintf(os.Stderr, "  reorder <name1> <name2> ...         Set the order (first = tried first)\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
-		fmt.Fprintf(os.Stderr, "  skillweave ai add bob bob --yolo --output-format text\n")
-		fmt.Fprintf(os.Stderr, "  skillweave ai add gemini /home/itodoro/bin/gemini.mjs -p\n")
-		fmt.Fprintf(os.Stderr, "  skillweave ai reorder gemini bob\n")
-		fmt.Fprintf(os.Stderr, "  skillweave ai list\n")
-		fmt.Fprintf(os.Stderr, "  skillweave ai remove gemini\n\n")
+		fmt.Fprintf(os.Stderr, "  learnweave ai add bob bob --yolo --output-format text\n")
+		fmt.Fprintf(os.Stderr, "  learnweave ai add gemini /home/itodoro/bin/gemini.mjs -p\n")
+		fmt.Fprintf(os.Stderr, "  learnweave ai reorder gemini bob\n")
+		fmt.Fprintf(os.Stderr, "  learnweave ai list\n")
+		fmt.Fprintf(os.Stderr, "  learnweave ai remove gemini\n\n")
 		fmt.Fprintf(os.Stderr, "The prompt is always appended as the last argument.\n")
 		fmt.Fprintf(os.Stderr, "When pushing, tools are tried in order until one succeeds.\n\n")
 		fs.PrintDefaults()
@@ -507,7 +507,7 @@ func cmdAI(args []string) {
 	switch action {
 	case "add":
 		if fs.NArg() < 3 {
-			fmt.Fprintf(os.Stderr, "Usage: skillweave ai add <name> <command> [args...]\n")
+			fmt.Fprintf(os.Stderr, "Usage: learnweave ai add <name> <command> [args...]\n")
 			os.Exit(1)
 		}
 		name := fs.Arg(1)
@@ -528,9 +528,9 @@ func cmdAI(args []string) {
 
 	case "list":
 		if len(cfg.AICommands) == 0 {
-			fmt.Println("No AI tools configured. Use 'skillweave ai add' to add one.")
+			fmt.Println("No AI tools configured. Use 'learnweave ai add' to add one.")
 			fmt.Println("\nExample:")
-			fmt.Println("  skillweave ai add bob bob --yolo --output-format text")
+			fmt.Println("  learnweave ai add bob bob --yolo --output-format text")
 			return
 		}
 		for i, cmd := range cfg.AICommands {
@@ -542,12 +542,12 @@ func cmdAI(args []string) {
 			fmt.Printf("  %s %s  →  %s%s\n", order, cmd.Name, cmd.Command, args)
 		}
 		if len(cfg.AICommands) > 1 {
-			fmt.Println("\nHint: use 'skillweave ai reorder <name1> <name2> ...' to change the try order.")
+			fmt.Println("\nHint: use 'learnweave ai reorder <name1> <name2> ...' to change the try order.")
 		}
 
 	case "remove":
 		if fs.NArg() < 2 {
-			fmt.Fprintf(os.Stderr, "Usage: skillweave ai remove <name>\n")
+			fmt.Fprintf(os.Stderr, "Usage: learnweave ai remove <name>\n")
 			os.Exit(1)
 		}
 		name := fs.Arg(1)
@@ -562,7 +562,7 @@ func cmdAI(args []string) {
 
 	case "reorder":
 		if fs.NArg() < 2 {
-			fmt.Fprintf(os.Stderr, "Usage: skillweave ai reorder <name1> <name2> ...\n")
+			fmt.Fprintf(os.Stderr, "Usage: learnweave ai reorder <name1> <name2> ...\n")
 			os.Exit(1)
 		}
 		names := make([]string, 0, fs.NArg()-1)
@@ -611,25 +611,30 @@ func cmdAI(args []string) {
 func cmdSetup(args []string) {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	name := fs.String("name", "", "Skill name (auto-derived from path if omitted)")
-	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	description := fs.String("description", "", "Short MCP tool description override (stored in config)")
+	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.learnweave)")
 	localPath := fs.String("local-path", "", "Local checkout root (auto-detected if inside a matching repo)")
 	repoURL := fs.String("repo", "", "Git repo URL (if not using a GitHub blob URL)")
 	skillPath := fs.String("path", "", "Path to SKILL.md in repo (required if URL doesn't include a file path)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: skillweave setup [flags] <github-url>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: learnweave setup [flags] <github-url>\n\n")
 		fmt.Fprintf(os.Stderr, "One-command setup: register a skill and print MCP client config.\n\n")
 		fmt.Fprintf(os.Stderr, "Accepts many URL formats:\n")
-		fmt.Fprintf(os.Stderr, "  skillweave setup https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md\n")
-		fmt.Fprintf(os.Stderr, "  skillweave setup https://github.com/user/repo --path skills/my-skill/SKILL.md\n")
-		fmt.Fprintf(os.Stderr, "  skillweave setup git@github.com:user/repo.git --path skills/my-skill/SKILL.md\n")
-		fmt.Fprintf(os.Stderr, "  skillweave setup user/repo --path skills/my-skill/SKILL.md\n")
-		fmt.Fprintf(os.Stderr, "  skillweave setup --repo git@github.com:user/repo.git --path skills/my-skill/SKILL.md\n\n")
+		fmt.Fprintf(os.Stderr, "  learnweave setup https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md\n")
+		fmt.Fprintf(os.Stderr, "  learnweave setup https://github.com/user/repo --path skills/my-skill/SKILL.md\n")
+		fmt.Fprintf(os.Stderr, "  learnweave setup git@github.com:user/repo.git --path skills/my-skill/SKILL.md\n")
+		fmt.Fprintf(os.Stderr, "  learnweave setup user/repo --path skills/my-skill/SKILL.md\n")
+		fmt.Fprintf(os.Stderr, "  learnweave setup --repo git@github.com:user/repo.git --path skills/my-skill/SKILL.md\n\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
 
 	if *cacheDir == "" {
 		*cacheDir = defaultCacheDir()
+	}
+	cfg, err := LoadConfig(*cacheDir)
+	if err != nil {
+		log.Fatalf("load config: %v", err)
 	}
 
 	rURL, sPath := *repoURL, *skillPath
@@ -652,7 +657,7 @@ func cmdSetup(args []string) {
 	if sPath == "" {
 		fmt.Fprintf(os.Stderr, "Error: could not determine the skill path from the URL.\n")
 		fmt.Fprintf(os.Stderr, "Use --path to specify it, e.g.:\n")
-		fmt.Fprintf(os.Stderr, "  skillweave setup %s --path skills/my-skill/SKILL.md\n", fs.Arg(0))
+		fmt.Fprintf(os.Stderr, "  learnweave setup %s --path skills/my-skill/SKILL.md\n", fs.Arg(0))
 		os.Exit(1)
 	}
 
@@ -673,14 +678,45 @@ func cmdSetup(args []string) {
 	}
 
 	fmt.Println("\nFetching skill from remote...")
-	desc, fileExists, err := loadRegisteredSkill(*cacheDir, skill)
+	loaded, err := loadRegisteredSkill(*cacheDir, skill)
 	if err != nil {
 		log.Fatalf("validate skill: %v", err)
 	}
+	desc := normalizeToolDescription(*description)
+	if desc == "" {
+		desc = loaded.Description
+	}
+	if desc == "" {
+		for _, existing := range cfg.Skills {
+			if normalizeRepoURL(existing.RepoURL) == normalizeRepoURL(rURL) && existing.SkillPath == sPath {
+				desc = normalizeToolDescription(existing.Description)
+				if desc != "" {
+					break
+				}
+			}
+		}
+	}
+	if desc == "" && strings.TrimSpace(loaded.Content) != "" {
+		fmt.Println("No description found in the document. Generating a short summary...")
+		generated, err := summarizeToolDescription(cfg, skillName, sPath, loaded.Content, os.Stdout)
+		if err != nil {
+			fmt.Printf("  Could not generate description automatically: %v\n", err)
+		} else {
+			desc = generated
+			fmt.Printf("  Generated description: %s\n", desc)
+		}
+	}
+	if desc == "" {
+		prompted, ok := promptForToolDescription(skillName, sPath)
+		if ok {
+			desc = prompted
+		}
+	}
+	skill.Description = desc
 
-	if !fileExists {
-		fmt.Println("SKILL.md not found in remote — creating skeleton...")
-		skeleton := SkeletonSKILL(skillName)
+	if !loaded.FileExists {
+		fmt.Printf("%s not found in remote — creating skeleton...\n", filepath.Base(sPath))
+		skeleton := SkeletonSKILL(skillName, desc)
 
 		// Write skeleton to cache repo.
 		cacheSkillFile := filepath.Join(repoCacheDir(*cacheDir, rURL), sPath)
@@ -701,11 +737,6 @@ func cmdSetup(args []string) {
 			}
 		}
 	}
-
-	cfg, err := LoadConfig(*cacheDir)
-	if err != nil {
-		log.Fatalf("load config: %v", err)
-	}
 	cfg.AddSkill(skill)
 
 	if err := SaveConfig(*cacheDir, cfg); err != nil {
@@ -718,11 +749,13 @@ func cmdSetup(args []string) {
 	if *localPath != "" {
 		fmt.Printf("  local: %s\n", filepath.Join(*localPath, sPath))
 	}
-	if !fileExists {
+	if !loaded.FileExists {
 		fmt.Println("  status: new skill (skeleton created)")
 	}
 	if desc != "" {
 		fmt.Printf("  description: %s\n", desc)
+	} else {
+		fmt.Printf("  description: %s\n", skill.ToolDescription())
 	}
 	fmt.Println("  OK")
 
@@ -741,7 +774,7 @@ func cmdSetup(args []string) {
 			}
 		}
 		if !found {
-			fmt.Println("  None found. Optional: run 'skillweave ai add' to configure one.")
+			fmt.Println("  None found. Optional: run 'learnweave ai add' to configure one.")
 		}
 	}
 
@@ -776,7 +809,7 @@ func cmdSetup(args []string) {
 
 func cmdStatus(args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.learnweave)")
 	fs.Parse(args)
 
 	if *cacheDir == "" {
@@ -828,25 +861,34 @@ func cmdStatus(args []string) {
 	fmt.Printf("\nCache: %s\n", *cacheDir)
 }
 
-// loadRegisteredSkill fetches the repo and reads the SKILL.md.
-// Returns (description, fileExists, error). When the file doesn't exist in the
-// remote repo, fileExists is false and err is nil — the caller can create a skeleton.
-func loadRegisteredSkill(cacheDir string, skill RegisteredSkill) (string, bool, error) {
+type loadedSkill struct {
+	Content     string
+	Description string
+	FileExists  bool
+}
+
+// loadRegisteredSkill fetches the repo and reads the registered document.
+// When the file doesn't exist in the remote repo, FileExists is false and err is nil.
+func loadRegisteredSkill(cacheDir string, skill RegisteredSkill) (loadedSkill, error) {
 	localRepoPath, err := ensureRepo(skill.RepoURL, cacheDir)
 	if err != nil {
-		return "", false, fmt.Errorf("fetch repo: %w", err)
+		return loadedSkill{}, fmt.Errorf("fetch repo: %w", err)
 	}
 
 	raw, err := os.ReadFile(filepath.Join(localRepoPath, skill.SkillPath))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", false, nil
+			return loadedSkill{}, nil
 		}
-		return "", false, fmt.Errorf("read %s: %w", skill.SkillPath, err)
+		return loadedSkill{}, fmt.Errorf("read %s: %w", skill.SkillPath, err)
 	}
 
 	_, desc, _ := parseFrontmatter(string(raw))
-	return desc, true, nil
+	return loadedSkill{
+		Content:     string(raw),
+		Description: normalizeToolDescription(desc),
+		FileExists:  true,
+	}, nil
 }
 
 // printMCPConfig prints MCP client configuration JSON.
@@ -872,16 +914,16 @@ func printMCPConfig() {
 
 func cmdPush(args []string) {
 	fs := flag.NewFlagSet("push", flag.ExitOnError)
-	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.learnweave)")
 	commitMsg := fs.String("m", "", "Commit message (auto-generated if omitted)")
 	skipPR := fs.Bool("no-pr", false, "Push branch only, don't create a PR")
 	aiName := fs.String("ai", "", "Use a specific AI tool by name (default: try all in order)")
 	dryRun := fs.Bool("dry-run", false, "Show what would change without committing or pushing")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: skillweave push [flags] <skill-name>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: learnweave push [flags] <skill-name>\n\n")
 		fmt.Fprintf(os.Stderr, "Push skill updates to GitHub as a PR.\n")
 		fmt.Fprintf(os.Stderr, "If there are unmerged learnings in the ledger, uses a configured AI tool to merge them.\n")
-		fmt.Fprintf(os.Stderr, "AI tools are tried in order (see 'skillweave ai list'). Use --ai to pick one.\n\n")
+		fmt.Fprintf(os.Stderr, "AI tools are tried in order (see 'learnweave ai list'). Use --ai to pick one.\n\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -899,7 +941,7 @@ func cmdPush(args []string) {
 			fmt.Fprintln(os.Stderr, "No skills registered. Use 'skillweave setup <github-url>' to add one.")
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "Usage: skillweave push [flags] <skill-name>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: learnweave push [flags] <skill-name>\n\n")
 		fmt.Fprintf(os.Stderr, "Available skills:\n")
 		for _, s := range cfg.Skills {
 			entries, _ := ReadLedger(*cacheDir, s.RepoURL, s.SkillPath, 0)
@@ -1100,9 +1142,7 @@ func runAI(ai AICommand, prompt string, w io.Writer) (string, error) {
 	return cleanAIOutput(result.String()), nil
 }
 
-// mergeNotesWithAI uses configured AI tools to merge learnings into the current SKILL.md content.
-// Returns the merged content or an error if all AI tools fail (or none are available).
-func mergeNotesWithAI(cfg *SkillConfig, currentContent string, learnings []string, w io.Writer) (string, error) {
+func resolveAITools(cfg *SkillConfig, w io.Writer) ([]AICommand, error) {
 	aiTools := cfg.AICommands
 	if len(aiTools) == 0 {
 		for _, fallback := range defaultAIFallbacks() {
@@ -1113,17 +1153,27 @@ func mergeNotesWithAI(cfg *SkillConfig, currentContent string, learnings []strin
 			}
 		}
 		if len(aiTools) == 0 {
-			return "", fmt.Errorf("no AI tools configured and none found on PATH")
+			return nil, fmt.Errorf("no AI tools configured and none found on PATH")
 		}
+	}
+	return aiTools, nil
+}
+
+// mergeNotesWithAI uses configured AI tools to merge learnings into the current document content.
+// Returns the merged content or an error if all AI tools fail (or none are available).
+func mergeNotesWithAI(cfg *SkillConfig, currentContent string, learnings []string, w io.Writer) (string, error) {
+	aiTools, err := resolveAITools(cfg, w)
+	if err != nil {
+		return "", err
 	}
 
 	prompt := fmt.Sprintf(
-		"You are updating a SKILL.md file with new learnings.\n\n"+
-			"Here is the current SKILL.md:\n```\n%s\n```\n\n"+
+		"You are updating a guidance Markdown file with new learnings.\n\n"+
+			"Here is the current document:\n```\n%s\n```\n\n"+
 			"Here are the new learnings to incorporate:\n%s\n\n"+
-			"Output ONLY the full updated SKILL.md content with the learnings merged into the appropriate sections. "+
+			"Output ONLY the full updated document content with the learnings merged into the appropriate sections. "+
 			"Do not add commentary before or after. Do not wrap in code fences. Do not summarize changes. "+
-			"Just output the raw SKILL.md content, starting with the first line of the document and ending with the last.",
+			"Just output the raw document content, starting with the first line of the document and ending with the last.",
 		currentContent,
 		formatLearnings(learnings),
 	)
@@ -1158,6 +1208,63 @@ func cleanAIOutput(raw string) string {
 		raw = raw[:idx]
 	}
 	return strings.TrimSpace(raw)
+}
+
+func normalizeToolDescription(raw string) string {
+	raw = cleanAIOutput(raw)
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "```") {
+		lines := strings.Split(raw, "\n")
+		if len(lines) >= 3 {
+			raw = strings.Join(lines[1:len(lines)-1], " ")
+		}
+	}
+	raw = strings.TrimSpace(raw)
+	raw = strings.Trim(raw, "\"'` ")
+	raw = strings.TrimPrefix(raw, "- ")
+	raw = strings.Join(strings.Fields(raw), " ")
+	return strings.TrimSpace(raw)
+}
+
+func summarizeToolDescription(cfg *SkillConfig, skillName, skillPath, content string, w io.Writer) (string, error) {
+	aiTools, err := resolveAITools(cfg, w)
+	if err != nil {
+		return "", err
+	}
+
+	const maxSummarySourceLen = 12000
+	if len(content) > maxSummarySourceLen {
+		content = content[:maxSummarySourceLen] + "\n\n[truncated]"
+	}
+
+	prompt := fmt.Sprintf(
+		"You are generating a short MCP tool description for a project guidance document.\n\n"+
+			"Skill name: %s\n"+
+			"Document path: %s\n\n"+
+			"Write exactly one plain-text sentence of 6 to 18 words that tells an AI coding agent what this document is for. "+
+			"Do not use markdown, bullets, quotes, labels, or code fences.\n\n"+
+			"Document contents:\n```\n%s\n```",
+		skillName,
+		skillPath,
+		content,
+	)
+
+	var summary string
+	var summaryErr error
+	for _, ai := range aiTools {
+		fmt.Fprintf(w, "Trying %q (%s) for description summary...\n", ai.Name, ai.Command)
+		summary, summaryErr = runAI(ai, prompt, w)
+		if summaryErr == nil {
+			summary = normalizeToolDescription(summary)
+			if summary == "" {
+				summaryErr = fmt.Errorf("%s returned an empty summary", ai.Name)
+			} else {
+				return summary, nil
+			}
+		}
+		fmt.Fprintf(w, "  %s failed: %v\n", ai.Name, summaryErr)
+	}
+	return "", fmt.Errorf("all AI tools failed, last error: %w", summaryErr)
 }
 
 // defaultAIFallbacks returns common AI tools to try if none are configured.
@@ -1246,6 +1353,19 @@ func confirmAction(prompt string) bool {
 	return line == "y" || line == "yes"
 }
 
+func promptForToolDescription(skillName, skillPath string) (string, bool) {
+	info, err := os.Stdin.Stat()
+	if err != nil || (info.Mode()&os.ModeCharDevice) == 0 {
+		return "", false
+	}
+
+	fmt.Fprintf(os.Stderr, "Enter a short MCP tool description for %q (%s).\n", skillName, skillPath)
+	fmt.Fprint(os.Stderr, "Leave blank to keep the default description: ")
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	return normalizeToolDescription(line), true
+}
+
 // showDiff prints a unified diff between original and updated content.
 func showDiff(original, updated, label string) {
 	origFile, err := os.CreateTemp("", "skill-orig-*.md")
@@ -1278,10 +1398,10 @@ func showDiff(original, updated, label string) {
 
 func cmdGC(args []string) {
 	fs := flag.NewFlagSet("gc", flag.ExitOnError)
-	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.learnweave)")
 	maxAge := fs.Int("days", 30, "Delete merged ledger entries older than this many days")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: skillweave gc [flags]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: learnweave gc [flags]\n\n")
 		fmt.Fprintf(os.Stderr, "Clean up stale cache repos and old merged ledger entries.\n\n")
 		fmt.Fprintf(os.Stderr, "Removes:\n")
 		fmt.Fprintf(os.Stderr, "  - Cached repos for skills that are no longer registered\n")

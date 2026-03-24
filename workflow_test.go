@@ -74,7 +74,7 @@ func TestLoadRegisteredSkill(t *testing.T) {
 	})
 	cacheDir := t.TempDir()
 
-	desc, err := loadRegisteredSkill(cacheDir, RegisteredSkill{
+	loaded, err := loadRegisteredSkill(cacheDir, RegisteredSkill{
 		Name:      "sample",
 		RepoURL:   repoDir,
 		SkillPath: "skills/sample/SKILL.md",
@@ -82,24 +82,40 @@ func TestLoadRegisteredSkill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadRegisteredSkill returned error: %v", err)
 	}
-	if desc != "Sample skill" {
-		t.Fatalf("unexpected description: %q", desc)
+	if !loaded.FileExists {
+		t.Fatalf("expected skill file to exist")
+	}
+	if loaded.Description != "Sample skill" {
+		t.Fatalf("unexpected description: %q", loaded.Description)
+	}
+	if !strings.Contains(loaded.Content, "Body") {
+		t.Fatalf("expected content to be loaded, got %q", loaded.Content)
 	}
 }
 
-func TestLoadRegisteredSkillFailsWhenFileIsMissing(t *testing.T) {
+func TestLoadRegisteredSkillMarksMissingFile(t *testing.T) {
 	repoDir := createTestGitRepo(t, map[string]string{
 		"README.md": "hello\n",
 	})
 	cacheDir := t.TempDir()
 
-	_, err := loadRegisteredSkill(cacheDir, RegisteredSkill{
+	loaded, err := loadRegisteredSkill(cacheDir, RegisteredSkill{
 		Name:      "sample",
 		RepoURL:   repoDir,
 		SkillPath: "skills/missing/SKILL.md",
 	})
-	if err == nil {
-		t.Fatalf("expected missing skill file to return an error")
+	if err != nil {
+		t.Fatalf("expected missing skill file to be treated as new, got error: %v", err)
+	}
+	if loaded.FileExists {
+		t.Fatalf("expected missing skill file to be reported as absent")
+	}
+}
+
+func TestNormalizeToolDescription(t *testing.T) {
+	got := normalizeToolDescription("```text\n  \"Sample guide for deployment workflows\"  \n```")
+	if got != "Sample guide for deployment workflows" {
+		t.Fatalf("unexpected normalized description: %q", got)
 	}
 }
 

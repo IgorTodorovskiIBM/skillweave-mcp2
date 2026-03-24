@@ -40,11 +40,16 @@ skillweave setup https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md
 # Or start a brand-new skill from scratch
 skillweave setup user/repo --path skills/my-skill/SKILL.md
 
+# Optionally pin the MCP tool description explicitly
+skillweave setup user/repo --path AGENTS.md --description "Project-specific agent workflow and conventions"
+
 # Paste the printed JSON into your MCP client config (.mcp.json)
 # Start a session — the skill loads automatically
 ```
 
 That's it. The agent now reads the skill at the start of every session, captures corrections as you work, and can push updates back as a PR.
+
+If the document has no YAML frontmatter description, `setup` will try to generate a short MCP tool summary with a configured AI tool and then fall back to prompting you.
 
 ## How it works
 

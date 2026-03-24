@@ -13,10 +13,11 @@ import (
 
 // RegisteredSkill is a skill tracked by the server.
 type RegisteredSkill struct {
-	Name      string `json:"name"`
-	RepoURL   string `json:"repo_url"`
-	SkillPath string `json:"skill_path"`
-	LocalPath string `json:"local_path,omitempty"` // Local checkout root (e.g. /Users/igor/Projects/zos-porting)
+	Name        string `json:"name"`
+	RepoURL     string `json:"repo_url"`
+	SkillPath   string `json:"skill_path"`
+	Description string `json:"description,omitempty"` // Stored MCP tool description when the document lacks frontmatter.
+	LocalPath   string `json:"local_path,omitempty"`  // Local checkout root (e.g. /Users/igor/Projects/zos-porting)
 }
 
 // AICommand is a configured AI tool for merging learnings.
@@ -39,7 +40,7 @@ func (c *SkillConfig) FindAICommand(name string) (*AICommand, error) {
 			return &c.AICommands[i], nil
 		}
 	}
-	return nil, fmt.Errorf("AI command not configured: %q (use 'skillweave ai add' to add one)", name)
+	return nil, fmt.Errorf("AI command not configured: %q (use 'learnweave ai add' to add one)", name)
 }
 
 // AddAICommand adds or replaces an AI command by name.
@@ -74,7 +75,7 @@ func LoadConfig(cacheDir string) (*SkillConfig, error) {
 		"cache_dir": cacheDir,
 		"operation": "load_config",
 	})
-	
+
 	path := configPath(cacheDir)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -85,7 +86,7 @@ func LoadConfig(cacheDir string) (*SkillConfig, error) {
 		logger.WithError(err).Error("failed to read config file")
 		return nil, WrapError("read config", err)
 	}
-	
+
 	var cfg SkillConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		logger.WithError(err).Error("failed to parse config file")
@@ -93,9 +94,9 @@ func LoadConfig(cacheDir string) (*SkillConfig, error) {
 			"path": path,
 		})
 	}
-	
+
 	logger.WithFields(map[string]interface{}{
-		"skill_count": len(cfg.Skills),
+		"skill_count":   len(cfg.Skills),
 		"ai_tool_count": len(cfg.AICommands),
 	}).Debug("config loaded successfully")
 	return &cfg, nil
@@ -104,24 +105,24 @@ func LoadConfig(cacheDir string) (*SkillConfig, error) {
 // SaveConfig writes the skill registry to disk.
 func SaveConfig(cacheDir string, cfg *SkillConfig) error {
 	logger := GetLogger().WithFields(map[string]interface{}{
-		"cache_dir": cacheDir,
-		"operation": "save_config",
-		"skill_count": len(cfg.Skills),
+		"cache_dir":     cacheDir,
+		"operation":     "save_config",
+		"skill_count":   len(cfg.Skills),
 		"ai_tool_count": len(cfg.AICommands),
 	})
 	logger.Debug("saving config")
-	
+
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		logger.WithError(err).Error("failed to create cache directory")
 		return WrapError("mkdir cache dir", err)
 	}
-	
+
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		logger.WithError(err).Error("failed to marshal config")
 		return WrapError("marshal config", err)
 	}
-	
+
 	path := configPath(cacheDir)
 	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		logger.WithError(err).Error("failed to write config file")
@@ -129,7 +130,7 @@ func SaveConfig(cacheDir string, cfg *SkillConfig) error {
 			"path": path,
 		})
 	}
-	
+
 	logger.Info("config saved successfully")
 	return nil
 }
@@ -141,7 +142,7 @@ func (c *SkillConfig) FindSkill(name string) (*RegisteredSkill, error) {
 			return &c.Skills[i], nil
 		}
 	}
-	return nil, fmt.Errorf("skill not registered: %q (use 'skillweave register' to add it)", name)
+	return nil, fmt.Errorf("skill not registered: %q (use 'learnweave register' to add it)", name)
 }
 
 // AddSkill registers a new skill, replacing any existing one with the same name.
@@ -164,6 +165,14 @@ func (c *SkillConfig) RemoveSkill(name string) bool {
 		}
 	}
 	return false
+}
+
+// ToolDescription returns the configured tool description fallback.
+func (s RegisteredSkill) ToolDescription() string {
+	if desc := strings.TrimSpace(s.Description); desc != "" {
+		return desc
+	}
+	return "Skill guide: " + s.Name
 }
 
 // githubBlobRe matches: https://github.com/<owner>/<repo>/blob/<branch>/<path>
@@ -385,22 +394,22 @@ func normalizeRepoURL(u string) string {
 }
 
 // SkeletonSKILL returns a minimal SKILL.md template for a new skill.
-func SkeletonSKILL(name string) string {
+func SkeletonSKILL(name, description string) string {
 	return fmt.Sprintf(`---
 name: %s
-description: ""
+description: %q
 ---
 
 # %s
 
 <!-- This is a new skill. Start capturing learnings and push when ready. -->
-`, name, name)
+`, name, description, name)
 }
 
 // FormatSkillList returns a human-readable list of registered skills.
 func FormatSkillList(cfg *SkillConfig) string {
 	if len(cfg.Skills) == 0 {
-		return "No skills registered. Use 'skillweave register <github-url>' to add one."
+		return "No skills registered. Use 'learnweave register <github-url>' to add one."
 	}
 	var sb strings.Builder
 	for i, s := range cfg.Skills {

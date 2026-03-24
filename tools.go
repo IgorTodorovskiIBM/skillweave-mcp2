@@ -17,7 +17,7 @@ type SkillUpdateParams struct {
 	SessionID      string   `json:"session_id,omitempty" jsonschema:"session ID returned when the skill was loaded (optional if skill_name is provided)"`
 	SkillName      string   `json:"skill_name,omitempty" jsonschema:"skill name as fallback when session_id is unavailable"`
 	Learnings      []string `json:"learnings" jsonschema:"list of things learned this session (corrections, tips, patterns, warnings)"`
-	UpdatedContent string   `json:"updated_content" jsonschema:"full new SKILL.md content with learnings incorporated"`
+	UpdatedContent string   `json:"updated_content" jsonschema:"full new guide document content with learnings incorporated"`
 }
 
 type SkillNoteParams struct {
@@ -62,7 +62,7 @@ func resolveSession(sessions *SessionManager, cfg *SkillConfig, cacheDir, sessio
 		if os.IsNotExist(err) {
 			content = []byte("")
 		} else {
-			return nil, fmt.Errorf("read SKILL.md: %w", err)
+			return nil, fmt.Errorf("read %s: %w", skill.SkillPath, err)
 		}
 	}
 
@@ -87,7 +87,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		s := s // capture for closure
 
 		// Ensure we have a cached clone, then check for updates.
-		desc := "Skill guide: " + s.Name
+		desc := s.ToolDescription()
 		localRepoPath := repoCacheDir(cacheDir, s.RepoURL)
 		skillFile := filepath.Join(localRepoPath, s.SkillPath)
 
@@ -121,12 +121,12 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 			Description: desc,
 		}, func(ctx context.Context, req *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, map[string]any, error) {
 			toolLogger := logger.WithFields(map[string]interface{}{
-				"tool": toolName,
+				"tool":       toolName,
 				"skill_name": s.Name,
-				"operation": "load_skill",
+				"operation":  "load_skill",
 			})
 			toolLogger.Info("skill tool invoked")
-			
+
 			// Fetch latest on each call.
 			localPath, err := ensureRepo(s.RepoURL, cacheDir)
 			if err != nil {
@@ -139,7 +139,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 				if os.IsNotExist(err) {
 					content = []byte("")
 				} else {
-					return textResult("Error reading SKILL.md: " + err.Error()), map[string]any{}, nil
+					return textResult(fmt.Sprintf("Error reading %s: %v", s.SkillPath, err)), map[string]any{}, nil
 				}
 			}
 
@@ -170,16 +170,16 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 	// --- skill_update ---
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "skill_update",
-		Description: "Save an updated SKILL.md locally. Call this when the user has corrected you multiple times, you discovered a new pattern or fix, the user asks you to update the skill, or the session is ending with meaningful learnings. Pass your learnings as a list and the full updated SKILL.md content.",
+		Description: "Save an updated guide document locally. Call this when the user has corrected you multiple times, you discovered a new pattern or fix, the user asks you to update the skill, or the session is ending with meaningful learnings. Pass your learnings as a list and the full updated document content.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillUpdateParams) (*mcp.CallToolResult, map[string]any, error) {
 		toolLogger := logger.WithFields(map[string]interface{}{
-			"tool": "skill_update",
-			"session_id": in.SessionID,
-			"skill_name": in.SkillName,
+			"tool":           "skill_update",
+			"session_id":     in.SessionID,
+			"skill_name":     in.SkillName,
 			"learning_count": len(in.Learnings),
 		})
 		toolLogger.Info("skill_update tool invoked")
-		
+
 		session, err := resolveSession(sessions, cfg, cacheDir, in.SessionID, in.SkillName)
 		if err != nil {
 			toolLogger.WithError(err).Error("failed to resolve session")
@@ -232,7 +232,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 
 		session.SetSaved(true)
 		toolLogger.WithFields(map[string]interface{}{
-			"session_id": session.ID,
+			"session_id":     session.ID,
 			"learning_count": len(in.Learnings),
 		}).Info("skill updated successfully")
 
@@ -248,7 +248,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 	// --- skill_note ---
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "skill_note",
-		Description: "Quickly jot down a learning or correction. Much lighter than skill_update — just pass a one-line note. Notes are saved to the ledger and merged into SKILL.md at push time. Call this immediately when you get corrected or discover something new.",
+		Description: "Quickly jot down a learning or correction. Much lighter than skill_update — just pass a one-line note. Notes are saved to the ledger and merged into the guide document at push time. Call this immediately when you get corrected or discover something new.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillNoteParams) (*mcp.CallToolResult, map[string]any, error) {
 		toolLogger := logger.WithFields(map[string]interface{}{
 			"tool":       "skill_note",
@@ -295,7 +295,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "skill_read",
-		Description: "Re-read the current SKILL.md content without creating a new session. Use this when you need to see the skill content again (e.g., before calling skill_update to incorporate notes).",
+		Description: "Re-read the current guide document content without creating a new session. Use this when you need to see the skill content again (e.g., before calling skill_update to incorporate notes).",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillReadParams) (*mcp.CallToolResult, map[string]any, error) {
 		toolLogger := logger.WithFields(map[string]interface{}{
 			"tool":       "skill_read",
@@ -312,7 +312,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 
 		content, err := os.ReadFile(filepath.Join(session.LocalRepoPath, session.SkillPath))
 		if err != nil {
-			return textResult("Error reading SKILL.md: " + err.Error()), map[string]any{}, nil
+			return textResult(fmt.Sprintf("Error reading %s: %v", session.SkillPath, err)), map[string]any{}, nil
 		}
 
 		return textResult(string(content)), map[string]any{}, nil
@@ -361,13 +361,13 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 	// --- skill_push ---
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "skill_push",
-		Description: "Push skill updates to GitHub as a PR. Handles everything: if there are unmerged notes, they are automatically merged into the SKILL.md by an AI tool before pushing. Just call this when the user wants to share changes.",
+		Description: "Push skill updates to GitHub as a PR. Handles everything: if there are unmerged notes, they are automatically merged into the guide document by an AI tool before pushing. Just call this when the user wants to share changes.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in SkillPushParams) (*mcp.CallToolResult, map[string]any, error) {
 		toolLogger := logger.WithFields(map[string]interface{}{
-			"tool": "skill_push",
+			"tool":       "skill_push",
 			"session_id": in.SessionID,
 			"skill_name": in.SkillName,
-			"skip_pr": in.SkipPR,
+			"skip_pr":    in.SkipPR,
 		})
 		toolLogger.Info("skill_push tool invoked")
 
@@ -441,7 +441,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		}
 
 		if content == string(upstreamContent) {
-			return textResult("Nothing to push. The SKILL.md already matches upstream."), map[string]any{}, nil
+			return textResult("Nothing to push. The guide document already matches upstream."), map[string]any{}, nil
 		}
 
 		branch := fmt.Sprintf("skill-update/%s/%s", session.SkillName, time.Now().Format("20060102-150405"))
@@ -453,7 +453,7 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		}
 		toolLogger.WithFields(map[string]interface{}{
 			"commit_sha": commitSHA,
-			"branch": branch,
+			"branch":     branch,
 		}).Info("created commit")
 
 		if err := push(session.LocalRepoPath, branch); err != nil {
@@ -531,6 +531,6 @@ func buildPRBody(commitMessage string) string {
 	sb.WriteString("## SKILL.md Update\n\n")
 	sb.WriteString(commitMessage)
 	sb.WriteString("\n\n---\n")
-	sb.WriteString("Generated by [skillweave](https://github.com/IgorTodorovskiIBM/skillweave)\n")
+	sb.WriteString("Generated by [learnweave](https://github.com/IgorTodorovskiIBM/learnweave)\n")
 	return sb.String()
 }

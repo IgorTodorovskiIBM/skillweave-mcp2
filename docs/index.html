@@ -230,7 +230,7 @@
 
     /* Problem/Solution */
     .duo-section {
-      padding: 80px 0;
+      padding: 20px 0 80px;
     }
     .duo-grid {
       display: grid;
@@ -335,7 +335,7 @@
     }
     .steps-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(5, 1fr);
       gap: 24px;
     }
     .step-card {
@@ -477,7 +477,7 @@
       .hero h1 { font-size: 2.2rem; }
       .hero .subtitle { font-size: 1.05rem; }
       .duo-grid { grid-template-columns: 1fr; }
-      .steps-grid { grid-template-columns: 1fr 1fr; gap: 28px; }
+      .steps-grid { grid-template-columns: repeat(3, 1fr); gap: 28px; }
       .tool-grid { grid-template-columns: 1fr; }
       .cta h2 { font-size: 1.7rem; }
     }
@@ -567,16 +567,16 @@
           <div class="terminal-dot green"></div>
         </div>
         <div class="terminal-body">
-          <div class="comment"># you correct the agent mid-session</div>
-          <div><span class="user">You:</span> No, use %w not %v for error wrapping in this codebase</div>
-          <div><span class="agent">Agent:</span> <span class="action">[calls skill_note]</span> <span class="result">Noted.</span></div>
+          <div class="comment"># Bob is porting OSS to z/OS and you spot an issue</div>
+          <div><span class="user">You:</span> No, you need to use xlclang++ not g++ &mdash; and link with zoslib</div>
+          <div><span class="agent">Bob:</span> <span class="action">[calls skill_note]</span> <span class="result">Noted.</span></div>
           <div class="spacer"></div>
           <div class="comment"># when ready, push to share with the team</div>
           <div><span class="user">You:</span> push the skill updates</div>
-          <div><span class="agent">Agent:</span> <span class="action">[calls skill_push]</span> <span class="result">PR created: #42</span></div>
+          <div><span class="agent">Bob:</span> <span class="action">[calls skill_push]</span> <span class="result">PR created: #42</span></div>
           <div class="spacer"></div>
           <div class="comment"># next session &mdash; any team member, any machine</div>
-          <div><span class="agent">Agent:</span> <span class="action">[loads skill]</span> <span class="dim">Already knows to use %w for error wrapping</span></div>
+          <div><span class="agent">Bob:</span> <span class="action">[loads skill_zos_porting_cli]</span> <span class="dim">Already knows to use xlclang++ and link with zoslib</span></div>
         </div>
       </div>
     </div>
@@ -594,7 +594,7 @@
         <div class="step-card">
           <div class="step-icon">2</div>
           <h4>Load</h4>
-          <p>Each skill becomes an MCP tool. The agent calls it at session start.</p>
+          <p>Each skill becomes an MCP tool with a short description. Only fully loaded when needed.</p>
         </div>
         <div class="step-card">
           <div class="step-icon">3</div>
@@ -603,8 +603,13 @@
         </div>
         <div class="step-card">
           <div class="step-icon">4</div>
+          <h4>Push</h4>
+          <p>An AI tool merges notes into the SKILL.md, commits, and opens a PR.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-icon">5</div>
           <h4>Share</h4>
-          <p>Push merges notes with AI and opens a PR. The whole team benefits.</p>
+          <p>The whole team's agents pick up the updated skill next session.</p>
         </div>
       </div>
     </div>
@@ -649,8 +654,12 @@
       <p class="cta-sub">Install, register a skill, add the MCP config. Done.</p>
       <div class="cta-terminal">
         <div><span class="prompt">$</span> <span class="cmd">go install github.com/IgorTodorovskiIBM/skillweave@latest</span></div>
-        <div><span class="prompt">$</span> <span class="cmd">skillweave setup user/repo --path skills/my-skill/SKILL.md</span></div>
-        <div class="comment"># paste the printed JSON into .mcp.json &mdash; you're ready</div>
+        <div><span class="prompt">$</span> <span class="cmd">export PATH="$PATH:$(go env GOPATH)/bin"</span></div>
+        <div class="comment"></div>
+        <div class="comment"># point at an existing skill (full URL or user/repo --path)</div>
+        <div><span class="prompt">$</span> <span class="cmd">skillweave setup https://github.com/user/repo/blob/main/skills/my-skill/SKILL.md</span></div>
+        <div class="comment"></div>
+        <div class="comment"># paste the printed JSON into .mcp.json or ~/.bob/settings.json</div>
       </div>
     </div>
   </section>

@@ -384,6 +384,19 @@ func normalizeRepoURL(u string) string {
 	return u
 }
 
+// SkeletonSKILL returns a minimal SKILL.md template for a new skill.
+func SkeletonSKILL(name string) string {
+	return fmt.Sprintf(`---
+name: %s
+description: ""
+---
+
+# %s
+
+<!-- This is a new skill. Start capturing learnings and push when ready. -->
+`, name, name)
+}
+
 // FormatSkillList returns a human-readable list of registered skills.
 func FormatSkillList(cfg *SkillConfig) string {
 	if len(cfg.Skills) == 0 {

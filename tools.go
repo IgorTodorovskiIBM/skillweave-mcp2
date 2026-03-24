@@ -59,7 +59,11 @@ func resolveSession(sessions *SessionManager, cfg *SkillConfig, cacheDir, sessio
 	}
 	content, err := os.ReadFile(filepath.Join(localRepoPath, skill.SkillPath))
 	if err != nil {
-		return nil, fmt.Errorf("read SKILL.md: %w", err)
+		if os.IsNotExist(err) {
+			content = []byte("")
+		} else {
+			return nil, fmt.Errorf("read SKILL.md: %w", err)
+		}
 	}
 
 	var localFilePath string
@@ -132,7 +136,11 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 
 			content, err := os.ReadFile(filepath.Join(localPath, s.SkillPath))
 			if err != nil {
-				return textResult("Error reading SKILL.md: " + err.Error()), map[string]any{}, nil
+				if os.IsNotExist(err) {
+					content = []byte("")
+				} else {
+					return textResult("Error reading SKILL.md: " + err.Error()), map[string]any{}, nil
+				}
 			}
 
 			// Determine local checkout path.
@@ -386,7 +394,11 @@ func registerTools(srv *mcp.Server, sessions *SessionManager, cfg *SkillConfig, 
 		}
 		upstreamContent, err := os.ReadFile(cachePath)
 		if err != nil {
-			return textResult("Error reading upstream file: " + err.Error()), map[string]any{}, nil
+			if os.IsNotExist(err) {
+				upstreamContent = []byte("")
+			} else {
+				return textResult("Error reading upstream file: " + err.Error()), map[string]any{}, nil
+			}
 		}
 
 		// Determine the content to push.

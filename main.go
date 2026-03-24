@@ -116,7 +116,7 @@ func main() {
 	InitLogger(level, *logJSON)
 	logger := GetLogger()
 	logger.WithFields(map[string]interface{}{
-		"version":   "0.3.0",
+		"version":   "0.1.0",
 		"cache_dir": *cacheDir,
 	}).Info("skillweave starting")
 
@@ -131,7 +131,7 @@ func main() {
 
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "skillweave",
-		Version: "0.3.0",
+		Version: "0.1.0",
 	}, &mcp.ServerOptions{
 		Instructions: serverInstructions,
 	})
@@ -251,24 +251,57 @@ func cmdList(args []string) {
 func cmdLedger(args []string) {
 	fs := flag.NewFlagSet("ledger", flag.ExitOnError)
 	cacheDir := fs.String("cache-dir", "", "Cache directory (default ~/.skillweave)")
+	all := fs.Bool("all", false, "Show all entries including merged (for list)")
 	yes := fs.Bool("yes", false, "Skip confirmation prompt (for clear)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: skillweave ledger <action> <skill-name> [entry-id]\n\n")
 		fmt.Fprintf(os.Stderr, "Actions:\n")
 		fmt.Fprintf(os.Stderr, "  list   <skill-name>             List ledger entries\n")
+		fmt.Fprintf(os.Stderr, "  review <skill-name>             Walk through unmerged notes (keep/discard)\n")
 		fmt.Fprintf(os.Stderr, "  delete <skill-name> <entry-id>  Delete a specific entry\n")
 		fmt.Fprintf(os.Stderr, "  clear  <skill-name>             Delete all entries\n\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
 
-	if fs.NArg() < 2 {
-		fs.Usage()
-		os.Exit(1)
-	}
-
 	if *cacheDir == "" {
 		*cacheDir = defaultCacheDir()
+	}
+
+	// No args or just an action with no skill: show skills with ledger summaries.
+	if fs.NArg() < 2 {
+		// If they passed just "list" with no skill, treat it as a summary view.
+		if fs.NArg() == 1 && fs.Arg(0) != "list" {
+			fs.Usage()
+			os.Exit(1)
+		}
+		cfg, err := LoadConfig(*cacheDir)
+		if err != nil {
+			log.Fatalf("load config: %v", err)
+		}
+		if len(cfg.Skills) == 0 {
+			fmt.Fprintln(os.Stderr, "No skills registered. Use 'skillweave setup <github-url>' to add one.")
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Usage: skillweave ledger <action> <skill-name> [entry-id]\n\n")
+		fmt.Fprintf(os.Stderr, "Available skills:\n")
+		for _, s := range cfg.Skills {
+			entries, _ := ReadLedger(*cacheDir, s.RepoURL, s.SkillPath, 0)
+			_, unmerged := collectUnmergedLearnings(entries)
+			var merged int
+			for _, e := range entries {
+				if e.CommitSHA != "" {
+					merged++
+				}
+			}
+			fmt.Fprintf(os.Stderr, "  %s  (%d unmerged, %d merged, %d total)\n", s.Name, len(unmerged), merged, len(entries))
+		}
+		fmt.Fprintf(os.Stderr, "\nActions:\n")
+		fmt.Fprintf(os.Stderr, "  list   <skill-name>             List ledger entries\n")
+		fmt.Fprintf(os.Stderr, "  delete <skill-name> <entry-id>  Delete a specific entry\n")
+		fmt.Fprintf(os.Stderr, "  clear  <skill-name>             Delete all entries\n\n")
+		fs.PrintDefaults()
+		os.Exit(1)
 	}
 
 	action := fs.Arg(0)
@@ -294,7 +327,14 @@ func cmdLedger(args []string) {
 			fmt.Println("No ledger entries.")
 			return
 		}
+		var shown, merged int
 		for _, e := range entries {
+			if e.CommitSHA != "" {
+				merged++
+				if !*all {
+					continue
+				}
+			}
 			status := "unmerged"
 			if e.CommitSHA != "" {
 				status = "merged (" + e.CommitSHA[:8] + ")"
@@ -306,16 +346,14 @@ func cmdLedger(args []string) {
 			if e.PRUrl != "" {
 				fmt.Printf("    PR: %s\n", e.PRUrl)
 			}
+			shown++
 		}
-		// Contextual hint: suggest clear when there are many merged entries.
-		var merged int
-		for _, e := range entries {
-			if e.CommitSHA != "" {
-				merged++
-			}
+		if shown == 0 {
+			fmt.Println("No unmerged notes. Use --all to see merged entries too.")
+			return
 		}
-		if merged >= 5 {
-			fmt.Printf("\nHint: %d merged entries. Run 'skillweave ledger clear %s' to clean up.\n", merged, skillName)
+		if !*all && merged > 0 {
+			fmt.Printf("\n(%d merged entries hidden. Use --all to show, or 'ledger clear %s' to clean up.)\n", merged, skillName)
 		}
 
 	case "delete":
@@ -339,6 +377,51 @@ func cmdLedger(args []string) {
 			log.Fatalf("clear ledger: %v", err)
 		}
 		fmt.Printf("Cleared %d ledger entries for %q\n", count, skillName)
+
+	case "review":
+		entries, err := ReadLedger(*cacheDir, skill.RepoURL, skill.SkillPath, 0)
+		if err != nil {
+			log.Fatalf("read ledger: %v", err)
+		}
+		// Collect only unmerged entries that have learnings.
+		var unmerged []LedgerEntry
+		for _, e := range entries {
+			if e.CommitSHA == "" && len(e.Learnings) > 0 {
+				unmerged = append(unmerged, e)
+			}
+		}
+		if len(unmerged) == 0 {
+			fmt.Println("No unmerged notes to review.")
+			return
+		}
+		fmt.Printf("Reviewing %d unmerged note(s) for %q\n\n", len(unmerged), skillName)
+		reader := bufio.NewReader(os.Stdin)
+		var kept, discarded int
+		for i, e := range unmerged {
+			for _, l := range e.Learnings {
+				fmt.Printf("  [%d/%d] %s\n", i+1, len(unmerged), l)
+			}
+			fmt.Fprintf(os.Stderr, "  Keep? [Y/n/q]: ")
+			line, _ := reader.ReadString('\n')
+			line = strings.TrimSpace(strings.ToLower(line))
+			switch line {
+			case "n", "no":
+				if err := DeleteLedgerEntry(*cacheDir, skill.RepoURL, skill.SkillPath, e.ID); err != nil {
+					fmt.Fprintf(os.Stderr, "  warning: could not delete: %v\n", err)
+				} else {
+					discarded++
+					fmt.Println("  Discarded.")
+				}
+			case "q", "quit":
+				fmt.Printf("\nStopped. Kept %d, discarded %d, %d remaining.\n", kept, discarded, len(unmerged)-i-discarded-kept)
+				return
+			default:
+				kept++
+				fmt.Println("  Kept.")
+			}
+			fmt.Println()
+		}
+		fmt.Printf("Done. Kept %d, discarded %d.\n", kept, discarded)
 
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown ledger action: %s\n", action)
@@ -588,9 +671,33 @@ func cmdSetup(args []string) {
 	}
 
 	fmt.Println("\nFetching skill from remote...")
-	desc, err := loadRegisteredSkill(*cacheDir, skill)
+	desc, fileExists, err := loadRegisteredSkill(*cacheDir, skill)
 	if err != nil {
 		log.Fatalf("validate skill: %v", err)
+	}
+
+	if !fileExists {
+		fmt.Println("SKILL.md not found in remote — creating skeleton...")
+		skeleton := SkeletonSKILL(skillName)
+
+		// Write skeleton to cache repo.
+		cacheSkillFile := filepath.Join(repoCacheDir(*cacheDir, rURL), sPath)
+		if err := os.MkdirAll(filepath.Dir(cacheSkillFile), 0o755); err != nil {
+			log.Fatalf("create cache dir: %v", err)
+		}
+		if err := os.WriteFile(cacheSkillFile, []byte(skeleton), 0o644); err != nil {
+			log.Fatalf("write skeleton to cache: %v", err)
+		}
+
+		// Write skeleton to local checkout if set.
+		if *localPath != "" {
+			localFile := filepath.Join(*localPath, sPath)
+			if err := os.MkdirAll(filepath.Dir(localFile), 0o755); err == nil {
+				if err := os.WriteFile(localFile, []byte(skeleton), 0o644); err == nil {
+					fmt.Printf("  Skeleton written to: %s\n", localFile)
+				}
+			}
+		}
 	}
 
 	cfg, err := LoadConfig(*cacheDir)
@@ -608,6 +715,9 @@ func cmdSetup(args []string) {
 	fmt.Printf("  path:  %s\n", sPath)
 	if *localPath != "" {
 		fmt.Printf("  local: %s\n", filepath.Join(*localPath, sPath))
+	}
+	if !fileExists {
+		fmt.Println("  status: new skill (skeleton created)")
 	}
 	if desc != "" {
 		fmt.Printf("  description: %s\n", desc)
@@ -630,6 +740,32 @@ func cmdSetup(args []string) {
 		}
 		if !found {
 			fmt.Println("  None found. Optional: run 'skillweave ai add' to configure one.")
+		}
+	}
+
+	// Offer to add skillweave as an MCP server in bob if available.
+	if _, err := exec.LookPath("bob"); err == nil {
+		// Check if already registered.
+		out, err := exec.Command("bob", "mcp", "list").Output()
+		alreadyRegistered := err == nil && strings.Contains(string(out), "skillweave")
+		if !alreadyRegistered {
+			binPath, _ := os.Executable()
+			if p, err := exec.LookPath("skillweave"); err == nil {
+				binPath = p
+			}
+			fmt.Printf("\nDetected bob on PATH. Add skillweave as an MCP server?\n")
+			fmt.Printf("  bob mcp add skillweave %s\n", binPath)
+			if confirmAction("Add now?") {
+				cmd := exec.Command("bob", "mcp", "add", "skillweave", binPath)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Run(); err != nil {
+					fmt.Fprintf(os.Stderr, "  Failed: %v\n", err)
+					fmt.Fprintf(os.Stderr, "  Run manually: bob mcp add skillweave %s\n", binPath)
+				} else {
+					fmt.Println("  Added skillweave to bob.")
+				}
+			}
 		}
 	}
 
@@ -690,19 +826,25 @@ func cmdStatus(args []string) {
 	fmt.Printf("\nCache: %s\n", *cacheDir)
 }
 
-func loadRegisteredSkill(cacheDir string, skill RegisteredSkill) (string, error) {
+// loadRegisteredSkill fetches the repo and reads the SKILL.md.
+// Returns (description, fileExists, error). When the file doesn't exist in the
+// remote repo, fileExists is false and err is nil — the caller can create a skeleton.
+func loadRegisteredSkill(cacheDir string, skill RegisteredSkill) (string, bool, error) {
 	localRepoPath, err := ensureRepo(skill.RepoURL, cacheDir)
 	if err != nil {
-		return "", fmt.Errorf("fetch repo: %w", err)
+		return "", false, fmt.Errorf("fetch repo: %w", err)
 	}
 
 	raw, err := os.ReadFile(filepath.Join(localRepoPath, skill.SkillPath))
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", skill.SkillPath, err)
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read %s: %w", skill.SkillPath, err)
 	}
 
 	_, desc, _ := parseFrontmatter(string(raw))
-	return desc, nil
+	return desc, true, nil
 }
 
 // printMCPConfig prints MCP client configuration JSON.
@@ -742,13 +884,33 @@ func cmdPush(args []string) {
 	}
 	fs.Parse(args)
 
-	if fs.NArg() < 1 {
-		fs.Usage()
-		os.Exit(1)
-	}
-
 	if *cacheDir == "" {
 		*cacheDir = defaultCacheDir()
+	}
+
+	if fs.NArg() < 1 {
+		cfg, err := LoadConfig(*cacheDir)
+		if err != nil {
+			log.Fatalf("load config: %v", err)
+		}
+		if len(cfg.Skills) == 0 {
+			fmt.Fprintln(os.Stderr, "No skills registered. Use 'skillweave setup <github-url>' to add one.")
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Usage: skillweave push [flags] <skill-name>\n\n")
+		fmt.Fprintf(os.Stderr, "Available skills:\n")
+		for _, s := range cfg.Skills {
+			entries, _ := ReadLedger(*cacheDir, s.RepoURL, s.SkillPath, 0)
+			_, unmerged := collectUnmergedLearnings(entries)
+			if len(unmerged) > 0 {
+				fmt.Fprintf(os.Stderr, "  %s  (%d unmerged)\n", s.Name, len(unmerged))
+			} else {
+				fmt.Fprintf(os.Stderr, "  %s\n", s.Name)
+			}
+		}
+		fmt.Fprintln(os.Stderr)
+		fs.PrintDefaults()
+		os.Exit(1)
 	}
 
 	cfg, err := LoadConfig(*cacheDir)
@@ -772,7 +934,11 @@ func cmdPush(args []string) {
 	skillFile := filepath.Join(localRepoPath, skill.SkillPath)
 	currentContent, err := os.ReadFile(skillFile)
 	if err != nil {
-		log.Fatalf("read SKILL.md: %v", err)
+		if os.IsNotExist(err) {
+			currentContent = []byte("")
+		} else {
+			log.Fatalf("read SKILL.md: %v", err)
+		}
 	}
 
 	// Check for unmerged learnings (ledger entries with learnings but no commit_sha).

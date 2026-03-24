@@ -262,7 +262,9 @@ func cmdLedger(args []string) {
 		fmt.Fprintf(os.Stderr, "  clear  <skill-name>             Delete all entries\n\n")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	// Reorder args so flags (--all, --yes, etc.) come before positional args,
+	// since Go's flag package stops parsing at the first non-flag argument.
+	fs.Parse(reorderFlags(args))
 
 	if *cacheDir == "" {
 		*cacheDir = defaultCacheDir()
@@ -1210,6 +1212,29 @@ func formatLearnings(learnings []string) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// reorderFlags moves flag-like arguments (starting with "-") before positional
+// arguments so that Go's flag package parses them correctly.
+func reorderFlags(args []string) []string {
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "-") {
+			flags = append(flags, args[i])
+			// If this flag takes a value (e.g. --cache-dir /tmp), grab the next arg too.
+			if i+1 < len(args) && !strings.Contains(args[i], "=") && !strings.HasPrefix(args[i+1], "-") {
+				// Check if it's a boolean flag (--all, --yes) — those don't take a value.
+				name := strings.TrimLeft(args[i], "-")
+				if name != "all" && name != "yes" {
+					i++
+					flags = append(flags, args[i])
+				}
+			}
+		} else {
+			positional = append(positional, args[i])
+		}
+	}
+	return append(flags, positional...)
 }
 
 // confirmAction prompts the user for confirmation. Returns true if they accept.

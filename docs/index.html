@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>skillweave - Shared memory for AI coding agents</title>
+  <meta name="description" content="MCP server that turns corrections and patterns into persistent, version-controlled skill files your whole team's AI agents can learn from.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-warm: #fafaf9;
+      --surface: #ffffff;
+      --border: #e7e5e4;
+      --border-light: #f5f5f4;
+      --text: #1c1917;
+      --text-secondary: #44403c;
+      --text-muted: #78716c;
+      --accent: #7c3aed;
+      --accent-light: #ede9fe;
+      --accent-text: #6d28d9;
+      --red: #dc2626;
+      --red-light: #fef2f2;
+      --green: #16a34a;
+      --green-light: #f0fdf4;
+      --code-bg: #1e1e2e;
+      --code-text: #cdd6f4;
+      --code-comment: #6c7086;
+      --code-accent: #cba6f7;
+      --code-green: #a6e3a1;
+      --code-blue: #89b4fa;
+      --code-peach: #fab387;
+      --radius: 16px;
+      --radius-sm: 10px;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+      --shadow: 0 4px 24px rgba(0,0,0,0.06);
+      --shadow-lg: 0 12px 48px rgba(0,0,0,0.08);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    .container-wide {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Nav */
+    nav {
+      padding: 16px 0;
+      position: sticky;
+      top: 0;
+      background: rgba(255,255,255,0.85);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      z-index: 100;
+      border-bottom: 1px solid var(--border-light);
+    }
+    nav .container-wide {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .logo {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--text);
+      text-decoration: none;
+      letter-spacing: -0.03em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .logo-icon {
+      width: 28px;
+      height: 28px;
+      background: var(--accent);
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .logo-icon svg { width: 16px; height: 16px; }
+    .nav-links { display: flex; gap: 8px; align-items: center; }
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.875rem;
+      font-weight: 500;
+      padding: 6px 12px;
+      border-radius: 8px;
+      transition: all 0.15s;
+    }
+    .nav-links a:hover { color: var(--text); background: var(--bg-warm); }
+    .nav-links .gh-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--text);
+      color: #fff;
+      padding: 7px 16px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: opacity 0.15s;
+      border: none;
+    }
+    .nav-links .gh-btn:hover { opacity: 0.85; color: #fff; background: var(--text); }
+    .nav-links .gh-btn svg { width: 15px; height: 15px; fill: currentColor; }
+
+    /* Hero */
+    .hero {
+      padding: 100px 0 80px;
+      text-align: center;
+    }
+    .hero .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--accent-light);
+      color: var(--accent-text);
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 5px 14px;
+      border-radius: 100px;
+      margin-bottom: 24px;
+    }
+    .hero .badge svg { width: 14px; height: 14px; }
+    .hero h1 {
+      font-size: 3.5rem;
+      font-weight: 800;
+      letter-spacing: -0.045em;
+      line-height: 1.08;
+      margin-bottom: 20px;
+      color: var(--text);
+    }
+    .hero h1 .highlight {
+      background: linear-gradient(135deg, #7c3aed, #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero .subtitle {
+      font-size: 1.2rem;
+      color: var(--text-muted);
+      max-width: 540px;
+      margin: 0 auto 40px;
+      line-height: 1.7;
+      font-weight: 400;
+    }
+    .hero-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--accent);
+      color: #fff;
+      padding: 12px 28px;
+      border-radius: var(--radius-sm);
+      font-size: 0.95rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.15s;
+      box-shadow: 0 2px 8px rgba(124,58,237,0.25);
+    }
+    .btn-primary:hover { background: #6d28d9; box-shadow: 0 4px 16px rgba(124,58,237,0.3); }
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 12px 28px;
+      border-radius: var(--radius-sm);
+      font-size: 0.95rem;
+      font-weight: 600;
+      text-decoration: none;
+      border: 1px solid var(--border);
+      transition: all 0.15s;
+    }
+    .btn-secondary:hover { background: var(--bg-warm); border-color: #d6d3d1; }
+    .btn-secondary svg { width: 18px; height: 18px; fill: currentColor; }
+
+    .install-cmd {
+      margin-top: 24px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 10px 18px;
+      border-radius: 8px;
+      background: var(--bg-warm);
+      border: 1px solid var(--border-light);
+      transition: all 0.15s;
+    }
+    .install-cmd:hover { border-color: var(--border); background: #f5f5f4; }
+    .install-cmd .prompt { color: var(--accent); user-select: none; }
+    .install-cmd .copy-icon {
+      color: var(--text-muted);
+      opacity: 0;
+      transition: opacity 0.15s;
+      width: 14px; height: 14px;
+    }
+    .install-cmd:hover .copy-icon { opacity: 1; }
+
+    /* Problem/Solution */
+    .duo-section {
+      padding: 80px 0;
+    }
+    .duo-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+    .duo-card {
+      border-radius: var(--radius);
+      padding: 32px;
+      border: 1px solid var(--border-light);
+    }
+    .duo-card.problem {
+      background: var(--red-light);
+      border-color: #fecaca;
+    }
+    .duo-card.solution {
+      background: var(--green-light);
+      border-color: #bbf7d0;
+    }
+    .duo-card .label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 12px;
+    }
+    .duo-card.problem .label { color: var(--red); }
+    .duo-card.solution .label { color: var(--green); }
+    .duo-card h3 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+    }
+    .duo-card p {
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+      line-height: 1.7;
+    }
+
+    /* Terminal demo */
+    .demo {
+      padding: 0 0 80px;
+    }
+    .demo h2 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 32px;
+      text-align: center;
+    }
+    .terminal {
+      background: var(--code-bg);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow-lg);
+    }
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 20px;
+      background: #181825;
+    }
+    .terminal-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+    .terminal-dot.red { background: #f38ba8; }
+    .terminal-dot.yellow { background: #f9e2af; }
+    .terminal-dot.green { background: #a6e3a1; }
+    .terminal-body {
+      padding: 24px 28px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.83rem;
+      line-height: 2.1;
+      color: var(--code-text);
+      overflow-x: auto;
+    }
+    .terminal-body .comment { color: var(--code-comment); }
+    .terminal-body .user { color: var(--code-peach); font-weight: 500; }
+    .terminal-body .agent { color: var(--code-blue); font-weight: 500; }
+    .terminal-body .action { color: var(--code-accent); }
+    .terminal-body .result { color: var(--code-green); }
+    .terminal-body .dim { color: var(--code-comment); }
+    .terminal-body .spacer { height: 8px; }
+
+    /* Steps */
+    .steps-section {
+      padding: 80px 0;
+      background: var(--bg-warm);
+      border-top: 1px solid var(--border-light);
+      border-bottom: 1px solid var(--border-light);
+    }
+    .steps-section h2 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 48px;
+      text-align: center;
+    }
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 24px;
+    }
+    .step-card {
+      text-align: center;
+    }
+    .step-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+      font-size: 1.3rem;
+      font-weight: 800;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
+      color: var(--accent);
+    }
+    .step-card h4 {
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+      letter-spacing: -0.01em;
+    }
+    .step-card p {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      line-height: 1.6;
+    }
+    .step-connector {
+      display: none;
+    }
+
+    /* Tools */
+    .tools-section {
+      padding: 80px 0;
+    }
+    .tools-section h2 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+    .tools-section .sub {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin-bottom: 36px;
+    }
+    .tool-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+    .tool-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 22px 22px 20px;
+      transition: all 0.15s;
+    }
+    .tool-card:hover {
+      border-color: #d6d3d1;
+      box-shadow: var(--shadow);
+    }
+    .tool-card code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      color: var(--accent-text);
+      font-weight: 600;
+      background: var(--accent-light);
+      padding: 2px 8px;
+      border-radius: 5px;
+    }
+    .tool-card p {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin-top: 8px;
+      line-height: 1.5;
+    }
+
+    /* CTA */
+    .cta {
+      padding: 100px 0;
+      text-align: center;
+      background: var(--bg-warm);
+      border-top: 1px solid var(--border-light);
+    }
+    .cta h2 {
+      font-size: 2.2rem;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      margin-bottom: 12px;
+    }
+    .cta .cta-sub {
+      color: var(--text-muted);
+      font-size: 1.05rem;
+      margin-bottom: 36px;
+    }
+    .cta-terminal {
+      background: var(--code-bg);
+      border-radius: var(--radius);
+      padding: 28px 32px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      line-height: 2.2;
+      text-align: left;
+      display: inline-block;
+      max-width: 100%;
+      overflow-x: auto;
+      box-shadow: var(--shadow-lg);
+      color: var(--code-text);
+    }
+    .cta-terminal .comment { color: var(--code-comment); }
+    .cta-terminal .cmd { color: var(--code-green); }
+    .cta-terminal .prompt { color: var(--code-accent); user-select: none; }
+
+    /* Footer */
+    footer {
+      padding: 28px 0;
+      border-top: 1px solid var(--border-light);
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+    footer a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    footer a:hover { color: var(--text); }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .hero { padding: 60px 0 50px; }
+      .hero h1 { font-size: 2.2rem; }
+      .hero .subtitle { font-size: 1.05rem; }
+      .duo-grid { grid-template-columns: 1fr; }
+      .steps-grid { grid-template-columns: 1fr 1fr; gap: 28px; }
+      .tool-grid { grid-template-columns: 1fr; }
+      .cta h2 { font-size: 1.7rem; }
+    }
+    @media (max-width: 480px) {
+      .hero h1 { font-size: 1.8rem; }
+      .hero-actions { flex-direction: column; }
+      .steps-grid { grid-template-columns: 1fr; }
+      .install-cmd { font-size: 0.75rem; }
+      .nav-links a:not(.gh-btn) { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <div class="container-wide">
+      <a href="/" class="logo">
+        <span class="logo-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        </span>
+        skillweave
+      </a>
+      <div class="nav-links">
+        <a href="#how-it-works">How it works</a>
+        <a href="#tools">Tools</a>
+        <a href="https://github.com/IgorTodorovskiIBM/skillweave" class="gh-btn">
+          <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <div class="container">
+      <div class="badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        MCP Server
+      </div>
+      <h1>
+        <span class="highlight">Shared memory</span><br>
+        for AI coding agents
+      </h1>
+      <p class="subtitle">
+        Turn corrections and hard-won knowledge into persistent skill files.
+        Teach your agent once, share with the whole team via Git.
+      </p>
+      <div class="hero-actions">
+        <a href="#get-started" class="btn-primary">Get started</a>
+        <a href="https://github.com/IgorTodorovskiIBM/skillweave" class="btn-secondary">
+          <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+      <div class="install-cmd" onclick="navigator.clipboard.writeText('go install github.com/IgorTodorovskiIBM/skillweave@latest'); this.querySelector('.copy-icon').style.opacity=1; setTimeout(()=>this.querySelector('.copy-icon').style.opacity=0, 1500)">
+        <span class="prompt">$</span>
+        go install github.com/IgorTodorovskiIBM/skillweave@latest
+        <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+      </div>
+    </div>
+  </section>
+
+  <section class="duo-section">
+    <div class="container">
+      <div class="duo-grid">
+        <div class="duo-card problem">
+          <div class="label">The problem</div>
+          <h3>Agents forget everything</h3>
+          <p>You correct the same mistakes, re-explain the same patterns, session after session. Every team member discovers the same gotchas independently.</p>
+        </div>
+        <div class="duo-card solution">
+          <div class="label">The solution</div>
+          <h3>Teach once, share forever</h3>
+          <p>skillweave captures learnings in version-controlled SKILL.md files. Next session, every team member's agent already knows what took you hours to teach.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="demo">
+    <div class="container">
+      <h2>See it in action</h2>
+      <div class="terminal">
+        <div class="terminal-bar">
+          <div class="terminal-dot red"></div>
+          <div class="terminal-dot yellow"></div>
+          <div class="terminal-dot green"></div>
+        </div>
+        <div class="terminal-body">
+          <div class="comment"># you correct the agent mid-session</div>
+          <div><span class="user">You:</span> No, use %w not %v for error wrapping in this codebase</div>
+          <div><span class="agent">Agent:</span> <span class="action">[calls skill_note]</span> <span class="result">Noted.</span></div>
+          <div class="spacer"></div>
+          <div class="comment"># when ready, push to share with the team</div>
+          <div><span class="user">You:</span> push the skill updates</div>
+          <div><span class="agent">Agent:</span> <span class="action">[calls skill_push]</span> <span class="result">PR created: #42</span></div>
+          <div class="spacer"></div>
+          <div class="comment"># next session &mdash; any team member, any machine</div>
+          <div><span class="agent">Agent:</span> <span class="action">[loads skill]</span> <span class="dim">Already knows to use %w for error wrapping</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="steps-section" id="how-it-works">
+    <div class="container-wide">
+      <h2>How it works</h2>
+      <div class="steps-grid">
+        <div class="step-card">
+          <div class="step-icon">1</div>
+          <h4>Register</h4>
+          <p>Point at a GitHub repo. Works even if the SKILL.md doesn't exist yet.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-icon">2</div>
+          <h4>Load</h4>
+          <p>Each skill becomes an MCP tool. The agent calls it at session start.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-icon">3</div>
+          <h4>Learn</h4>
+          <p>Corrections and discoveries are captured instantly via <code>skill_note</code>.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-icon">4</div>
+          <h4>Share</h4>
+          <p>Push merges notes with AI and opens a PR. The whole team benefits.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tools-section" id="tools">
+    <div class="container-wide">
+      <h2>MCP tools</h2>
+      <p class="sub">Each registered skill becomes its own tool, plus these are always available</p>
+      <div class="tool-grid">
+        <div class="tool-card">
+          <code>skill_note</code>
+          <p>Capture a one-line learning. Merged into the skill at push time.</p>
+        </div>
+        <div class="tool-card">
+          <code>skill_push</code>
+          <p>Merge notes, commit, push, and open a PR &mdash; one call.</p>
+        </div>
+        <div class="tool-card">
+          <code>skill_update</code>
+          <p>Full rewrite of the SKILL.md with structured learnings.</p>
+        </div>
+        <div class="tool-card">
+          <code>skill_read</code>
+          <p>Re-read the skill mid-session to refresh context.</p>
+        </div>
+        <div class="tool-card">
+          <code>skill_list_notes</code>
+          <p>Review all unmerged notes before pushing.</p>
+        </div>
+        <div class="tool-card">
+          <code>skill_&lt;name&gt;</code>
+          <p>One per registered skill. Loads the skill and starts a session.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta" id="get-started">
+    <div class="container">
+      <h2>Get started in 30 seconds</h2>
+      <p class="cta-sub">Install, register a skill, add the MCP config. Done.</p>
+      <div class="cta-terminal">
+        <div><span class="prompt">$</span> <span class="cmd">go install github.com/IgorTodorovskiIBM/skillweave@latest</span></div>
+        <div><span class="prompt">$</span> <span class="cmd">skillweave setup user/repo --path skills/my-skill/SKILL.md</span></div>
+        <div class="comment"># paste the printed JSON into .mcp.json &mdash; you're ready</div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="container">
+      <a href="https://github.com/IgorTodorovskiIBM/skillweave">skillweave</a> &mdash; shared memory for AI coding agents
+    </div>
+  </footer>
+
+</body>
+</html>
